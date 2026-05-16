@@ -442,6 +442,9 @@ def test_run_ingest_streaming_processes_each_video(
     assert fresh_ctx.tables.videos.count_rows() == 2
     assert fresh_ctx.tables.segments.count_rows() == 10
     assert "succeeded=2" in last_log
+    # FTS index built automatically — final log line includes the status.
+    assert "indexes:" in last_log
+    assert "fts_text=" in last_log
 
 
 def test_run_ingest_streaming_no_match(

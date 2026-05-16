@@ -558,6 +558,13 @@ def run_ingest_streaming(
             log.append(f"  FAILED  {path.name}  {result.error}")
         yield (i + 1) / len(paths), "\n".join(log)
 
+    if n_ok > 0:
+        idx_status = search_mod.ensure_indexes(ctx.tables, replace=False)
+        log.append(
+            f"  indexes: fts_text={idx_status.fts_text} "
+            f"vec_text={idx_status.vec_text} vec_visual={idx_status.vec_visual}"
+        )
+
     log.append(
         f"done — succeeded={n_ok} skipped={n_skip} "
         f"failed={n_fail} segments_written={n_segments}"

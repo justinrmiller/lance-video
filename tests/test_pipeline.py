@@ -250,3 +250,106 @@ def test_failure_is_isolated_per_video(tmp_path: Path, fixture_video: Path) -> N
     assert batch.written == 5
     failed = next(r for r in batch.results if not r.ok)
     assert failed.error is not None
+
+
+# -- auto-index after ingest ------------------------------------------------
+
+
+def _has_fts_on_text(tables: store.StoreTables) -> bool:
+    for idx in tables.segments.list_indices():
+        if "text" in (getattr(idx, "columns", None) or []):
+            return True
+    return False
+
+
+def test_process_directory_auto_indexes_by_default(
+    ingest_root: Path, tmp_path: Path
+) -> None:
+    """After a successful batch, the FTS index on `text` must exist — without
+    it, `search_text` falls back to vector-only with a noisy warning. The
+    PLAN's hybrid retrieval depends on FTS being built."""
+    cfg = _build_config(tmp_path, segment_seconds=2.0)
+    db = store.connect(cfg.db_path)
+    tables = store.ensure_tables(db)
+
+    batch = process_directory(
+        ingest_root,
+        cfg,
+        tables,
+        transcriber=fake_transcriber(),
+        text_embedder=fake_text_embedder(),
+        vision_embedder=fake_vision_embedder(),
+    )
+    assert batch.succeeded == 2
+    assert _has_fts_on_text(tables), "auto_index should have built FTS on `text`"
+
+
+def test_process_directory_auto_index_disabled(
+    ingest_root: Path, tmp_path: Path
+) -> None:
+    cfg = _build_config(tmp_path, segment_seconds=2.0)
+    db = store.connect(cfg.db_path)
+    tables = store.ensure_tables(db)
+
+    process_directory(
+        ingest_root,
+        cfg,
+        tables,
+        transcriber=fake_transcriber(),
+        text_embedder=fake_text_embedder(),
+        vision_embedder=fake_vision_embedder(),
+        auto_index=False,
+    )
+    assert not _has_fts_on_text(tables)
+
+
+def test_process_directory_no_successes_skips_index(
+    tmp_path: Path
+) -> None:
+    """If the batch wrote nothing (empty directory, all failed), there's no
+    reason to spin up the FTS builder."""
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    cfg = _build_config(tmp_path, segment_seconds=2.0)
+    db = store.connect(cfg.db_path)
+    tables = store.ensure_tables(db)
+
+    process_directory(
+        empty,
+        cfg,
+        tables,
+        transcriber=fake_transcriber(),
+        text_embedder=fake_text_embedder(),
+        vision_embedder=fake_vision_embedder(),
+    )
+    assert not _has_fts_on_text(tables)
+
+
+def test_search_text_after_ingest_uses_fts_leg(
+    ingest_root: Path, tmp_path: Path
+) -> None:
+    """End-to-end: after `process_directory`, `search_text` should return
+    hits that record an `fts` component (the RRF blend of vector + FTS), not
+    fall back to vector-only with the warning the user reported."""
+    from video_lance.search import search_text
+
+    cfg = _build_config(tmp_path, segment_seconds=2.0)
+    db = store.connect(cfg.db_path)
+    tables = store.ensure_tables(db)
+
+    process_directory(
+        ingest_root,
+        cfg,
+        tables,
+        transcriber=fake_transcriber(),
+        text_embedder=fake_text_embedder(),
+        vision_embedder=fake_vision_embedder(),
+    )
+
+    hits = search_text(tables, fake_text_embedder(), "red.", limit=5)
+    assert hits
+    # At least one hit should record an `fts` contribution → hybrid leg
+    # actually fired, no fallback. (Individual hits that only appeared in
+    # the vector leg legitimately won't have an `fts` component; what
+    # matters is that the FTS query *ran*.)
+    assert any("fts" in h.components for h in hits)

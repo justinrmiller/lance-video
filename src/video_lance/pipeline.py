@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from video_lance.stages import (
 )
 from video_lance.store import StoreTables
 from video_lance.transcribe import WhisperTranscriber
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -115,14 +118,22 @@ def process_directory(
     text_embedder: E5Embedder,
     vision_embedder: SigLIPEmbedder,
     force: bool = False,
+    auto_index: bool = True,
 ) -> BatchResult:
-    """Discover videos under `root` and process each.
+    """Discover videos under `root`, process each, optionally build indexes.
 
     Sequential for now; PLAN §6 calls for a `ProcessPoolExecutor` keyed on
     `--workers`. That requires pickleable models, which our embedder
     instances aren't — adding it sensibly is a follow-up. Threads aren't a
     useful substitute here because the model encode calls would still
     serialize on the GIL/CUDA lock.
+
+    With `auto_index=True` (the default), `search.ensure_indexes` runs
+    after the batch so that `search_text`'s hybrid FTS leg works on the
+    first query. Without it, you'd see "Cannot perform full text search
+    unless an INVERTED index has been created" the first time text-mode
+    search hits a fresh DB. The call is idempotent; existing indexes are
+    reported as `exists` and not rebuilt.
     """
     discovered = discovery.walk(root, include=cfg.include, exclude=cfg.exclude)
     batch = BatchResult(root=root, discovered=list(discovered))
@@ -140,4 +151,24 @@ def process_directory(
         )
         batch.results.append(result)
 
+    if auto_index and batch.succeeded > 0:
+        _build_indexes(tables)
+
     return batch
+
+
+def _build_indexes(tables: StoreTables) -> None:
+    """Idempotent: builds FTS + IVF where applicable, leaves existing alone.
+
+    Imported lazily because `search` depends on `pipeline` only at call time
+    (avoids the circular import setup that would otherwise need a guarded
+    `if TYPE_CHECKING:`)."""
+    from video_lance import search as search_mod
+
+    status = search_mod.ensure_indexes(tables, replace=False)
+    logger.info(
+        "auto-index: fts_text=%s vec_text=%s vec_visual=%s",
+        status.fts_text,
+        status.vec_text,
+        status.vec_visual,
+    )
