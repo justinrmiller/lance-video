@@ -41,7 +41,7 @@ A Python pipeline that indexes a directory of videos into a LanceDB store with m
 | 1 | Scaffold, `models.py`, `config.py`, `segmenter.py` | ✅ done |
 | 2 | `probe.py`, `transcribe.py`, `clipper.py`, `frames.py`, fixture video | ✅ done |
 | 3 | `embed_text.py` (e5-instruct), `embed_vision.py` (SigLIP 2), device autodetect | ✅ done |
-| 4 | PyArrow schemas, LanceDB store with Blob V2 | ✅ done |
+| 4 | PyArrow schemas, LanceDB store with Blob V1 | ✅ done |
 | 5 | Stage protocol, pipeline orchestration, `video-lance ingest` CLI | ✅ done |
 | 6 | Search (text / visual / multi), `info`, `reindex` | ✅ done |
 | 7 | Gradio UI (`video-lance ui`) + HF Spaces shim | ✅ done |
