@@ -1,6 +1,6 @@
 # video-lance
 
-A Python pipeline that indexes a directory of videos into a LanceDB store with multi-modal embeddings, plus a Gradio UI for searching it. Single language end-to-end; no Node/TS toolchain.
+A Python pipeline that indexes a directory of videos into a LanceDB store with multi-modal embeddings, plus a Gradio UI for searching it.
 
 ```
                       ┌────────────────────────────────────────────────┐
