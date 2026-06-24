@@ -8,15 +8,12 @@ Run via the CLI:
 
     uv run python -m video_lance.ui_app
 
-For Hugging Face Spaces, point the Space's app file at `ui/app.py` (the
-top-level shim), which delegates here.
-
 Design notes
 ------------
 The pure-function entrypoints (`run_search`, `play_clip`, `build_context`)
 are exposed at module level so they're unit-testable *without* spinning up
 Gradio. `build_app` and `launch` import Gradio lazily — they're only called
-from the CLI and from the HF Spaces shim.
+from the CLI and from the module's `__main__` entrypoint.
 """
 
 from __future__ import annotations
@@ -95,15 +92,16 @@ def build_context(
 ) -> AppContext:
     """Open the LanceDB store and load the embedders.
 
+    If `db_path` doesn't exist yet, an empty store is created on the fly so
+    the UI can launch cold — you can then build the index from the Ingest tab
+    without dropping to the CLI first. Search over the empty store simply
+    returns no results.
+
     Model identifiers fall back to whatever the DB was built with (read from
     the persisted metadata table), then to the project defaults — same
     precedence the `search` CLI uses.
     """
     db_path = Path(db_path)
-    if not db_path.exists():
-        raise FileNotFoundError(
-            f"no LanceDB store at {db_path}; run `video-lance ingest` first."
-        )
 
     resolved = resolve_device(device)
 
@@ -209,9 +207,7 @@ def run_search(
     if mode_clean == "text":
         if not query.strip():
             raise ValueError("text mode requires a query string")
-        hits = search_mod.search_text(
-            ctx.tables, ctx.text_embedder, query, limit=n, sql_filter=sql
-        )
+        hits = search_mod.search_text(ctx.tables, ctx.text_embedder, query, limit=n, sql_filter=sql)
     elif mode_clean == "visual":
         if image is not None:
             hits = search_mod.search_visual(
@@ -262,7 +258,7 @@ def play_clip(
 ) -> str | None:
     """Resolve a gallery click to a playable MP4 path.
 
-    Reads the segment's `clip_bytes` Blob V2 column out of LanceDB, writes
+    Reads the segment's `clip_bytes` Blob V1 column out of LanceDB, writes
     it to a tempfile (Gradio's `gr.Video` wants a path), and returns the
     path. Returns `None` if the index is out of range or the segment has no
     clip stored.
@@ -566,8 +562,7 @@ def run_ingest_streaming(
         )
 
     log.append(
-        f"done — succeeded={n_ok} skipped={n_skip} "
-        f"failed={n_fail} segments_written={n_segments}"
+        f"done — succeeded={n_ok} skipped={n_skip} failed={n_fail} segments_written={n_segments}"
     )
     yield 1.0, "\n".join(log)
 
@@ -691,6 +686,12 @@ def build_app(ctx: AppContext) -> Any:
         with gr.Tabs():
             # =========================== SEARCH ===========================
             with gr.Tab("Search"):
+                if n_videos == 0:
+                    gr.Markdown(
+                        "> **No videos indexed yet.** Search will return nothing "
+                        "until you build the store — head to the **Ingest** tab, "
+                        "point it at a videos directory, and run ingest."
+                    )
                 with gr.Row():
                     with gr.Column(scale=2):
                         query_in = gr.Textbox(
@@ -806,24 +807,19 @@ def build_app(ctx: AppContext) -> Any:
                             0.0, 30.0, value=0.0, step=0.5, label="overlap_seconds"
                         )
                     with gr.Row():
-                        merge_short_tail_in = gr.Checkbox(
-                            value=True, label="merge_short_tail"
-                        )
+                        merge_short_tail_in = gr.Checkbox(value=True, label="merge_short_tail")
                         sentence_snap_in = gr.Slider(
-                            0.0, 5.0, value=0.0, step=0.1,
+                            0.0,
+                            5.0,
+                            value=0.0,
+                            step=0.1,
                             label="sentence_snap_tolerance_s",
                         )
 
                 with gr.Accordion("Frame sampling", open=False), gr.Row():
-                    frame_position_in = gr.Slider(
-                        0.0, 1.0, value=0.5, step=0.05, label="position"
-                    )
-                    jpeg_quality_in = gr.Slider(
-                        1, 100, value=85, step=1, label="jpeg_quality"
-                    )
-                    max_edge_in = gr.Slider(
-                        64, 1024, value=512, step=32, label="max_long_edge"
-                    )
+                    frame_position_in = gr.Slider(0.0, 1.0, value=0.5, step=0.05, label="position")
+                    jpeg_quality_in = gr.Slider(1, 100, value=85, step=1, label="jpeg_quality")
+                    max_edge_in = gr.Slider(64, 1024, value=512, step=32, label="max_long_edge")
 
                 force_in = gr.Checkbox(value=False, label="--force (re-ingest if already indexed)")
 
@@ -832,7 +828,10 @@ def build_app(ctx: AppContext) -> Any:
                     cancel_btn = gr.Button("Cancel", variant="stop")
 
                 progress_out = gr.Slider(
-                    0.0, 1.0, value=0.0, step=0.001,
+                    0.0,
+                    1.0,
+                    value=0.0,
+                    step=0.001,
                     label="Progress",
                     interactive=False,
                 )
@@ -939,6 +938,4 @@ def launch(
 
 
 if __name__ == "__main__":  # pragma: no cover - convenience entrypoint
-    import os
-
-    launch(Path(os.environ.get("VL_DB_PATH", "./video-lance.db")))
+    launch(Path("./video-lance.db"))

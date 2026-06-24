@@ -161,9 +161,7 @@ def test_search_visual_text_query(ingested_db: store.StoreTables) -> None:
     assert all(h.components.get("visual") is not None for h in hits)
 
 
-def test_search_visual_with_image_path(
-    ingested_db: store.StoreTables, tmp_path: Path
-) -> None:
+def test_search_visual_with_image_path(ingested_db: store.StoreTables, tmp_path: Path) -> None:
     img_path = tmp_path / "query.jpg"
     Image.new("RGB", (32, 32), (255, 0, 0)).save(img_path, format="JPEG")
     hits = search_visual(ingested_db, fake_vision_embedder(), image=img_path, limit=3)

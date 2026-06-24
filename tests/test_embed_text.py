@@ -76,8 +76,8 @@ def test_encode_query_shape_and_norm(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_passage_and_query_differ_for_same_string(monkeypatch: pytest.MonkeyPatch) -> None:
     """Sanity check: the prefix logic is wired so passage("X") != query("X").
-    (PLAN §10 Session 3 explicitly calls this out as the guardrail against silent
-    prefix bugs that destroy retrieval quality.)
+    This is the guardrail against silent prefix bugs that destroy retrieval
+    quality.
     """
     _install_fake(monkeypatch)
     emb = get_text_embedder(device="cpu")

@@ -26,7 +26,7 @@ from video_lance.schema import (
 
 def video_id_for_path(path: Path) -> str:
     """Stable identifier for a video file: sha256 of the absolute path, first
-    16 hex chars. Matches the spec in PLAN §5.3.
+    16 hex chars.
 
     Note: moving the source file invalidates this ID. Acceptable for v1;
     content-hash v2 is a known follow-up.
@@ -235,7 +235,7 @@ def get_segments_for_video(tables: StoreTables, video_id: str) -> list[dict[str,
 
 # -- blob reads ---------------------------------------------------------------
 
-# Blob V2 columns (`clip_bytes`, `keyframe_jpeg`) round-trip through standard
+# Blob V1 columns (`clip_bytes`, `keyframe_jpeg`) round-trip through standard
 # reads as descriptors, not raw bytes. To get bytes back we resolve the
 # segment to its row id, then ask the underlying lance dataset for the blob.
 
@@ -296,7 +296,7 @@ def set_embedding_models(
     """Persist the embedding model identifiers the DB was built with.
 
     Called once on first ingest. Re-ingest with different model identifiers
-    is a higher-level concern (see PLAN §5.3 / §12).
+    is a higher-level concern handled by the caller.
     """
     set_metadata(
         tables,

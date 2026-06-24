@@ -95,7 +95,7 @@ class ProbeStage:
     def run(self, ctx: PipelineContext) -> StageResult:
         ctx.meta = probe.get_meta(ctx.path)
 
-        # Idempotency check (PLAN §5.3): if a row for this video already exists
+        # Idempotency check: if a row for this video already exists
         # and was built with the same segment knobs, skip everything downstream
         # unless --force.
         if ctx.force:
@@ -223,8 +223,7 @@ class EmbedVisionStage:
         vecs = ctx.vision_embedder.encode_images(images)
         if vecs.shape[0] != len(ctx.segments):
             raise RuntimeError(
-                f"vision embedder returned {vecs.shape[0]} vectors for "
-                f"{len(ctx.segments)} segments"
+                f"vision embedder returned {vecs.shape[0]} vectors for {len(ctx.segments)} segments"
             )
         for s, v in zip(ctx.segments, vecs, strict=True):
             s.visual_embedding = np.asarray(v, dtype=np.float32)

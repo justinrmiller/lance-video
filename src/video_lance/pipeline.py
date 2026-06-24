@@ -90,6 +90,7 @@ def process_video(
                 # as success-with-no-write. Any other unready stage means the
                 # previous one short-circuited, which is also fine.
                 break
+            logger.debug("stage %s on %s", stage.name, path)
             stage.run(ctx)
     except Exception as exc:  # noqa: BLE001 - we surface the error per-video
         return ProcessResult(
@@ -122,8 +123,8 @@ def process_directory(
 ) -> BatchResult:
     """Discover videos under `root`, process each, optionally build indexes.
 
-    Sequential for now; PLAN §6 calls for a `ProcessPoolExecutor` keyed on
-    `--workers`. That requires pickleable models, which our embedder
+    Sequential for now; a `ProcessPoolExecutor` keyed on `--workers` is the
+    natural next step. That requires pickleable models, which our embedder
     instances aren't — adding it sensibly is a follow-up. Threads aren't a
     useful substitute here because the model encode calls would still
     serialize on the GIL/CUDA lock.

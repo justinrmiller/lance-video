@@ -8,7 +8,7 @@ A Python pipeline that indexes a directory of videos into a LanceDB store with m
                       │                                                │
                       │  ffprobe → faster-whisper → segmenter →        │
                       │  ffmpeg clip/keyframe → e5-instruct (text) →   │
-                      │  SigLIP 2 (vision) → LanceDB (Blob V2 for      │
+                      │  SigLIP 2 (vision) → LanceDB (Blob V1 for      │
                       │  clip_bytes + keyframe_jpeg)                   │
                       └─────────────────────┬──────────────────────────┘
                                             │
@@ -29,7 +29,7 @@ A Python pipeline that indexes a directory of videos into a LanceDB store with m
    │       ↓                                                         │
    │  LanceDB hybrid vector + FTS search                             │
    │       ↓                                                         │
-   │  gallery of keyframe thumbnails (Blob V2 reads)                 │
+   │  gallery of keyframe thumbnails (Blob V1 reads)                 │
    │  click a tile → inline <video> playback of clip_bytes           │
    └─────────────────────────────────────────────────────────────────┘
 ```
@@ -41,12 +41,10 @@ A Python pipeline that indexes a directory of videos into a LanceDB store with m
 | 1 | Scaffold, `models.py`, `config.py`, `segmenter.py` | ✅ done |
 | 2 | `probe.py`, `transcribe.py`, `clipper.py`, `frames.py`, fixture video | ✅ done |
 | 3 | `embed_text.py` (e5-instruct), `embed_vision.py` (SigLIP 2), device autodetect | ✅ done |
-| 4 | PyArrow schemas, LanceDB store with Blob V1 | ✅ done |
+| 4 | PyArrow schemas, LanceDB store with blob columns (Blob V1) | ✅ done |
 | 5 | Stage protocol, pipeline orchestration, `video-lance ingest` CLI | ✅ done |
 | 6 | Search (text / visual / multi), `info`, `reindex` | ✅ done |
-| 7 | Gradio UI (`video-lance ui`) + HF Spaces shim | ✅ done |
-
-The original PLAN.pdf called for a Streamlit UI; this repo briefly tried a Vite + React + serverless-TS-reader architecture, then collapsed to a single Gradio app — same end result (free-form search, gallery, inline playback), one language, no Node toolchain.
+| 7 | Gradio UI (`video-lance ui`) | ✅ done |
 
 ## Requirements
 
@@ -61,7 +59,7 @@ The original PLAN.pdf called for a Streamlit UI; this repo briefly tried a Vite 
 git clone <this repo>
 cd lance-video
 uv sync
-uv run pytest -v     # 207 tests, ~17s
+uv run pytest -v     # 227 passed, 6 skipped, ~25s
 ```
 
 ### Ingest
@@ -99,8 +97,8 @@ The UI is a Gradio Blocks app with three tabs:
 - **Mode switcher** — `text` (e5 + FTS hybrid), `visual` (SigLIP 2 cross-modal), `multi` (RRF blend of both).
 - **Image upload** — drop in any image; SigLIP 2 encodes it and searches against `visual_embedding`.
 - **SQL filter** — pass a `WHERE` expression like `duration_s > 60` straight to LanceDB.
-- **Gallery of keyframe thumbnails** — pulled from the `keyframe_jpeg` Blob V2 column on every search.
-- **Inline clip playback** — click a tile; the segment's `clip_bytes` Blob V2 column is read out, written to a tempfile, and fed to `<video>` with autoplay.
+- **Gallery of keyframe thumbnails** — pulled from the `keyframe_jpeg` blob column on every search.
+- **Inline clip playback** — click a tile; the segment's `clip_bytes` blob column is read out, written to a tempfile, and fed to `<video>` with autoplay.
 
 **Ingest** — run the full pipeline from the browser.
 - Point at a videos directory, set include / exclude globs, hit **Discover** to preview the file list.
@@ -114,27 +112,12 @@ The UI is a Gradio Blocks app with three tabs:
 - Danger zone (collapsed accordion): delete the selected video + its segments, gated by an "I understand…" checkbox.
 - **Rebuild indexes** button = `video-lance reindex` (drops + creates FTS + IVF on both embedding columns).
 
-### Deploy to Hugging Face Spaces
-
-`ui/app.py` is the Spaces entry point. It reads the LanceDB store from `VL_DB_PATH` (env var, default `./video-lance.db`). For a real deploy:
-
-1. Build the LanceDB store locally with `video-lance ingest`.
-2. Upload it to S3 / R2 / your bucket of choice (Lance natively supports `s3://...` URIs).
-3. Create a Hugging Face Space with the Gradio SDK and point it at this repo.
-4. Set Space secrets:
-   - `VL_DB_PATH=s3://your-bucket/video-lance.db`
-   - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_DEFAULT_REGION` (or the IAM-role equivalents).
-5. Push. The Space's `app.py` is the shim that imports `video_lance.ui_app` and launches it.
-
-The data is still S3-backed; only the *runtime* moves from "Lambda function in your account" to "Spaces container managed by HF." Trade-off discussed in earlier session history if you want the receipts.
-
 ## Repository layout
 
 ```
 video-lance/
 ├── pyproject.toml
 ├── scripts/demo.sh                # one-shot ingest + search demo (CLI only)
-├── ui/app.py                      # Hugging Face Spaces entry shim
 ├── src/video_lance/
 │   ├── config.py                  # SegmentationConfig, FrameSamplingConfig, Config
 │   ├── models.py                  # TranscriptWord, Transcript, VideoMeta
@@ -147,15 +130,14 @@ video-lance/
 │   ├── embed_text.py              # e5-instruct (1024-d, L2-normalized)
 │   ├── embed_vision.py            # SigLIP 2 (1152-d, L2-normalized, cross-modal)
 │   ├── discovery.py               # walk dir, filter by include/exclude globs
-│   ├── schema.py                  # PyArrow schemas + dim constants + Blob V2 tags
+│   ├── schema.py                  # PyArrow schemas + dim constants + blob tags (Blob V1)
 │   ├── store.py                   # LanceDB connect / upsert / blob reads
 │   ├── stages.py                  # Stage protocol + 8 concrete stages
 │   ├── pipeline.py                # process_video / process_directory
 │   ├── search.py                  # text / visual / multi + ensure_indexes + db_info
-│   ├── rerank.py                  # cross-encoder rerank stub (raises)
 │   ├── ui_app.py                  # Gradio Blocks app + run_search / play_clip
 │   └── cli.py                     # typer: ingest / search / info / reindex / ui
-└── tests/                         # 207 tests (+ 6 opt-in integration tests)
+└── tests/                         # 227 tests (+ 6 opt-in integration tests)
     ├── _fakes.py                  # shared fake Whisper / e5 / SigLIP 2
     ├── conftest.py                # session-scoped fixture_video
     └── fixtures/make_fixture.py   # deterministic 10s color-bar + sine-wave video
@@ -168,13 +150,14 @@ video-lance/
 - Submit / `Search` button → `run_search` → returns `(gallery_rows, raw_hits_state)`.
 - `gallery.select` → `play_clip` reads the segment's `clip_bytes` blob and returns a tempfile path to the `gr.Video` component.
 
-The Gradio import is at module top because Gradio's introspection calls `typing.get_type_hints()` on event handlers, and `gr.SelectData` annotations can't be resolved if `gr` is only bound inside a function. Once is enough; the CLI lazy-imports `ui_app.launch`, so the ~0.8 s gradio import only fires when you actually launch the UI (or run the UI tests).
+The Gradio import is at module top because Gradio's introspection calls `typing.get_type_hints()` on event handlers, and `gr.SelectData` annotations can't be resolved if `gr` is only bound inside a function. Once is enough; the CLI lazy-imports `ui_app.launch`, so the gradio import only fires when you actually launch the UI (or run the UI tests).
 
 ## Testing
 
 ```bash
-uv run pytest -v                            # 226 passed
+uv run pytest -v                            # 227 passed, 6 skipped
 uv run ruff check src tests                 # lint
+uv run ruff format --check src tests scripts  # formatting gate
 uv run ty check                             # static type check (Astral's `ty`)
 
 # Coverage (branch + missing lines; baseline ~89% across the package).
@@ -197,16 +180,16 @@ uv run pre-commit run --all-files    # run every hook against the whole tree
 `.pre-commit-config.yaml` ships with:
 
 - the standard hygiene hooks (`trailing-whitespace`, `end-of-file-fixer`, `check-yaml`, `check-toml`, `check-added-large-files`, `check-merge-conflict`, `mixed-line-ending`),
-- `ruff-check --fix` (auto-fix on commit),
+- `ruff-check --fix` and `ruff-format` (lint auto-fix + formatting on commit),
 - `ty` (Astral's type checker, scoped to `src/` via `[tool.ty.src]`).
 
-pytest is intentionally **not** a hook — at ~20 s it'd make `git commit` painful. Run it explicitly, or wire it as a pre-push hook if you want belt-and-braces.
+pytest is intentionally **not** a hook as the time it makes would make `git commit` painful. Run it explicitly, or wire it as a pre-push hook if you want to be safer.
 
 Every Python module has unit tests against a deterministic 10 s color-bar fixture video. The model wrappers are tested with hash-based fakes (no real Whisper / e5 / SigLIP 2 weights downloaded during `pytest`). The opt-in integration suite loads the real models and is what would have caught the `sentencepiece` and `transformers 5.x ModelOutput` bugs earlier.
 
 ## Known limitations
 
-- **Pipeline is sequential per video.** PLAN §6 called for a `ProcessPoolExecutor`; the embedder instances aren't easily pickleable, so adding it sensibly is a follow-up.
+- **Pipeline is sequential per video.** A `ProcessPoolExecutor` is the natural next step, but the embedder instances aren't easily pickleable, so adding it sensibly is a follow-up.
 - **Free-form queries pay encoding cost on every search.** e5 ~50 ms, SigLIP 2 ~30 ms on warm CPU. Imperceptible to humans but worth noting if you go very high QPS.
 - **SigLIP 2 is multilingual** (a big improvement over SigLIP 1, which was English-centric). Non-English `visual` / `multi` queries work reasonably; for transcript-over-transcript text search, e5-instruct remains the better encoder, which is why the `text` mode keeps using it.
 - **No live ingest from the UI.** The UI only reads. To re-ingest with new settings, drop to the CLI.

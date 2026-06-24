@@ -23,14 +23,14 @@ repos:
       - id: mixed-line-ending
         args: [--fix=lf]
 
-  # ruff: lint (`ruff check --fix`). We don't run `ruff format` because the
-  # project hasn't been formatted with it yet — adding the formatter is a
-  # separate decision.
+  # ruff: lint (`ruff check --fix`) + format. The tree is ruff-formatted;
+  # `ruff-format` keeps it that way and CI gates on `ruff format --check`.
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.13
     hooks:
       - id: ruff-check
         args: [--fix]
+      - id: ruff-format
 
   # ty runs from the local venv (`uv run …`) so it uses the same pinned
   # version as `uv run pytest`. Scoped to src/ via [tool.ty.src] in pyproject.

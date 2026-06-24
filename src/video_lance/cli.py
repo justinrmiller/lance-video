@@ -13,7 +13,6 @@ from video_lance.config import (
 )
 from video_lance.embed_text import DEFAULT_TEXT_MODEL, get_text_embedder
 from video_lance.embed_vision import DEFAULT_VISION_MODEL, get_vision_embedder
-from video_lance.rerank import RerankNotImplementedError
 from video_lance.transcribe import get_transcriber
 
 app = typer.Typer(
@@ -42,6 +41,11 @@ def ingest(
     segment_seconds: float = typer.Option(30.0, "--segment-seconds", "-s"),
     overlap_seconds: float = typer.Option(0.0, "--overlap-seconds", "-o"),
     merge_short_tail: bool = typer.Option(True, "--merge-short-tail/--no-merge-short-tail"),
+    min_tail_seconds: float = typer.Option(
+        5.0,
+        "--min-tail-seconds",
+        help="Merge a trailing segment shorter than this into the prior one.",
+    ),
     sentence_snap_tolerance: float = typer.Option(0.0, "--sentence-snap-tolerance"),
     frame_position: float = typer.Option(0.5, "--frame-position"),
     frame_jpeg_quality: int = typer.Option(85, "--frame-jpeg-quality"),
@@ -59,7 +63,7 @@ def ingest(
     include: str = typer.Option(",".join(DEFAULT_INCLUDE), "--include"),
     exclude: str = typer.Option("", "--exclude"),
     force: bool = typer.Option(False, "--force", help="Re-ingest even if already indexed."),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Walk + probe + print plan; no writes."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Walk + probe + list files; no writes."),
 ) -> None:
     """Index a directory (or a single video) into the LanceDB store."""
     cfg = Config(
@@ -67,6 +71,7 @@ def ingest(
             segment_seconds=segment_seconds,
             overlap_seconds=overlap_seconds,
             merge_short_tail=merge_short_tail,
+            min_tail_seconds=min_tail_seconds,
             sentence_snap_tolerance_seconds=sentence_snap_tolerance,
         ),
         frames=FrameSamplingConfig(
@@ -104,8 +109,11 @@ def ingest(
         vision_embed_model=cfg.vision_embed_model,
     )
 
+    typer.echo("loading transcriber model")
     transcriber = get_transcriber(cfg.whisper_model, device=cfg.device)
+    typer.echo("loading text embedding model")
     text_embedder = get_text_embedder(cfg.text_embed_model, device=cfg.device)
+    typer.echo("loading vision embedding model")
     vision_embedder = get_vision_embedder(cfg.vision_embed_model, device=cfg.device)
 
     batch = pipeline.process_directory(
@@ -146,18 +154,8 @@ def search_cmd(
     device: str = typer.Option("auto", "--device"),
     text_embed_model: str | None = typer.Option(None, "--text-embed-model"),
     vision_embed_model: str | None = typer.Option(None, "--vision-embed-model"),
-    rerank: bool = typer.Option(False, "--rerank", help="Cross-encoder rerank (not implemented)."),
 ) -> None:
     """Search the LanceDB store in text / visual / multi mode."""
-    if rerank:
-        from video_lance.rerank import rerank as do_rerank
-
-        try:
-            do_rerank([], "")
-        except RerankNotImplementedError as exc:
-            typer.echo(f"error: {exc}", err=True)
-            raise typer.Exit(code=2) from None
-
     if mode not in {"text", "visual", "multi"}:
         typer.echo(f"unknown --mode {mode!r}; expected text | visual | multi", err=True)
         raise typer.Exit(code=2)
@@ -168,7 +166,7 @@ def search_cmd(
     db = store.connect(db_path)
     tables = store.ensure_tables(db)
 
-    # Default models come from what the DB was built with; fall back to plan defaults.
+    # Default models come from what the DB was built with; fall back to built-in defaults.
     stored_text, stored_vision = store.get_embedding_models(tables)
     text_model = text_embed_model or stored_text or DEFAULT_TEXT_MODEL
     vision_model = vision_embed_model or stored_vision or DEFAULT_VISION_MODEL
@@ -178,9 +176,7 @@ def search_cmd(
             typer.echo("text mode requires a QUERY string", err=True)
             raise typer.Exit(code=2)
         text_embedder = get_text_embedder(text_model, device=device)
-        hits = search.search_text(
-            tables, text_embedder, query, limit=limit, sql_filter=sql_filter
-        )
+        hits = search.search_text(tables, text_embedder, query, limit=limit, sql_filter=sql_filter)
     elif mode == "visual":
         if image is None and not query:
             typer.echo("visual mode requires QUERY or --image", err=True)
@@ -273,9 +269,7 @@ def ui_cmd(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(7860, "--port"),
     device: str = typer.Option("auto", "--device"),
-    share: bool = typer.Option(
-        False, "--share", help="Ask Gradio for a temporary public URL."
-    ),
+    share: bool = typer.Option(False, "--share", help="Ask Gradio for a temporary public URL."),
 ) -> None:
     """Launch the Gradio web UI.
 

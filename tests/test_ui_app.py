@@ -43,9 +43,7 @@ def ctx(tmp_path: Path, fixture_video: Path) -> AppContext:
     )
     db = store.connect(cfg.db_path)
     tables = store.ensure_tables(db)
-    store.set_embedding_models(
-        tables, text_embed_model="fake-e5", vision_embed_model="fake-siglip"
-    )
+    store.set_embedding_models(tables, text_embed_model="fake-e5", vision_embed_model="fake-siglip")
     process_video(
         fixture_video,
         fixture_video.parent,
@@ -218,9 +216,27 @@ def test_caption_format() -> None:
 # -- build_context behavior --------------------------------------------------
 
 
-def test_build_context_rejects_missing_db(tmp_path: Path) -> None:
-    with pytest.raises(FileNotFoundError):
-        build_context(tmp_path / "no-such-db")
+def test_build_context_cold_starts_on_missing_db(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A nonexistent DB path is created as an empty store rather than raising,
+    so the UI can launch cold and ingest from the Ingest tab. Search over the
+    empty store returns no results."""
+    import video_lance.ui_app as ui_app
+
+    monkeypatch.setattr(ui_app, "get_text_embedder", lambda *a, **k: fake_text_embedder())
+    monkeypatch.setattr(ui_app, "get_vision_embedder", lambda *a, **k: fake_vision_embedder())
+
+    db_path = tmp_path / "no-such-db"
+    ctx = build_context(db_path)
+
+    assert db_path.exists()
+    assert ctx.tables.segments.count_rows() == 0
+    assert ctx.tables.videos.count_rows() == 0
+
+    gallery, raw = run_search(ctx, "anything", "text", None, 5, "", 0.4)
+    assert gallery == []
+    assert raw == []
 
 
 # -- gallery thumbnails resolve to real JPEGs --------------------------------
@@ -340,9 +356,7 @@ def test_rebuild_indexes_action_runs(ctx: AppContext) -> None:
 # ===========================================================================
 
 
-def test_discover_for_table_finds_videos(
-    tmp_path: Path, fixture_video: Path
-) -> None:
+def test_discover_for_table_finds_videos(tmp_path: Path, fixture_video: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     shutil.copy(fixture_video, root / "a.mp4")
@@ -357,9 +371,7 @@ def test_discover_for_table_finds_videos(
         assert r["size_mb"] > 0
 
 
-def test_discover_for_table_respects_exclude(
-    tmp_path: Path, fixture_video: Path
-) -> None:
+def test_discover_for_table_respects_exclude(tmp_path: Path, fixture_video: Path) -> None:
     root = tmp_path / "src"
     root.mkdir()
     shutil.copy(fixture_video, root / "keep.mp4")
@@ -398,9 +410,7 @@ def fresh_ctx(tmp_path: Path) -> AppContext:
     db_path = tmp_path / "db"
     db = store.connect(db_path)
     tables = store.ensure_tables(db)
-    store.set_embedding_models(
-        tables, text_embed_model="fake-e5", vision_embed_model="fake-siglip"
-    )
+    store.set_embedding_models(tables, text_embed_model="fake-e5", vision_embed_model="fake-siglip")
     ctx = AppContext(
         db_path=db_path,
         tables=tables,
@@ -447,9 +457,7 @@ def test_run_ingest_streaming_processes_each_video(
     assert "fts_text=" in last_log
 
 
-def test_run_ingest_streaming_no_match(
-    fresh_ctx: AppContext, tmp_path: Path
-) -> None:
+def test_run_ingest_streaming_no_match(fresh_ctx: AppContext, tmp_path: Path) -> None:
     empty = tmp_path / "nothing"
     empty.mkdir()
     yields = list(run_ingest_streaming(fresh_ctx, empty, segment_seconds=2.0))
@@ -474,9 +482,7 @@ def test_run_ingest_streaming_skip_on_re_run(
     shutil.copy(fixture_video, root / "a.mp4")
 
     # First run writes the row.
-    for _ in run_ingest_streaming(
-        fresh_ctx, root, segment_seconds=2.0, merge_short_tail=False
-    ):
+    for _ in run_ingest_streaming(fresh_ctx, root, segment_seconds=2.0, merge_short_tail=False):
         pass
     assert fresh_ctx.tables.segments.count_rows() == 5
 
@@ -497,9 +503,7 @@ def test_run_ingest_streaming_force_reingests(
     root.mkdir()
     shutil.copy(fixture_video, root / "a.mp4")
 
-    for _ in run_ingest_streaming(
-        fresh_ctx, root, segment_seconds=2.0, merge_short_tail=False
-    ):
+    for _ in run_ingest_streaming(fresh_ctx, root, segment_seconds=2.0, merge_short_tail=False):
         pass
     last_log = ""
     for _prog, log in run_ingest_streaming(

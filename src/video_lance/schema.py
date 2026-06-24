@@ -11,8 +11,13 @@ VIDEOS_TABLE = "videos"
 SEGMENTS_TABLE = "segments"
 METADATA_TABLE = "_metadata"
 
-# Blob V2 opt-in: Lance picks Inline / Packed / Dedicated storage automatically
-# based on payload size. Tagging is the only thing the schema author has to do.
+# Blob V1 opt-in: tagging a binary column with `lance-encoding:blob=true` tells
+# Lance to store the payload out-of-line — the column holds descriptors, not the
+# raw bytes — so large values don't bloat columnar scans. Reads go through
+# `Dataset.take_blobs`. This is the legacy blob encoding (Lance file format
+# <= 2.1). The newer adaptive Blob V2 (inline / packed / dedicated / external,
+# file format 2.2+) is a future upgrade, currently blocked on LanceDB being able
+# to *create* 2.2 datasets — `lancedb` 0.33's create_table pins format 2.1.
 _BLOB_METADATA = {"lance-encoding:blob": "true"}
 
 
@@ -53,8 +58,8 @@ segments_schema = pa.schema(
 
 
 # Small free-form key/value table used to persist things like the embedding
-# model identifiers the DB was built with. Per PLAN §10 Session 4, this is
-# what `info` reads and what re-ingest checks against to detect a model swap.
+# model identifiers the DB was built with. This is what `info` reads and what
+# re-ingest checks against to detect a model swap.
 metadata_schema = pa.schema(
     [
         pa.field("key", pa.string()),

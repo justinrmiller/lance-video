@@ -224,18 +224,6 @@ def test_search_image_query_via_cli(
     assert "1. [" in result.stdout
 
 
-def test_search_rerank_flag_errors(
-    tmp_path: Path, fixture_video: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    db_path = _build_ingested_db(tmp_path, fixture_video, monkeypatch)
-    result = runner.invoke(
-        app,
-        ["search", "x", "--rerank", "--db-path", str(db_path), "--mode", "text"],
-    )
-    assert result.exit_code == 2
-    assert "not implemented in v1" in result.stderr.lower()
-
-
 def test_search_unknown_mode_errors(
     tmp_path: Path, fixture_video: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

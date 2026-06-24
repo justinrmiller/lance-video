@@ -56,7 +56,7 @@ def test_segments_schema_fields() -> None:
 
 
 def test_blob_metadata_tags_present() -> None:
-    """Blob V2 opt-in is the whole point of this project — the tag MUST be on
+    """Blob V1 opt-in is the whole point of this project — the tag MUST be on
     both blob columns or LanceDB will store them inline as regular bytes."""
     for column in ("clip_bytes", "keyframe_jpeg"):
         field = segments_schema.field(column)
@@ -64,7 +64,7 @@ def test_blob_metadata_tags_present() -> None:
         meta = field.metadata or {}
         # Arrow metadata keys/values are bytes.
         assert meta.get(b"lance-encoding:blob") == b"true", (
-            f"{column} missing Blob V2 metadata tag (got {meta})"
+            f"{column} missing Blob V1 metadata tag (got {meta})"
         )
 
 

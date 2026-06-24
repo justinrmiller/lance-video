@@ -44,8 +44,8 @@ def test_smoke_process_video_writes_segments_with_correct_dims(
 ) -> None:
     """End-to-end on the fixture video: every stage runs, both vector columns
     are populated with float32 vectors of the right dim, and the blob columns
-    round-trip via `read_segment_blob`. This is PLAN §10 Session 5's
-    acceptance check."""
+    round-trip via `read_segment_blob`. This is the end-to-end acceptance
+    check."""
     cfg = _build_config(tmp_path, segment_seconds=2.0)
     db = store.connect(cfg.db_path)
     tables = store.ensure_tables(db)
@@ -90,9 +90,7 @@ def test_smoke_process_video_writes_segments_with_correct_dims(
     assert jpeg.startswith(b"\xff\xd8")  # JPEG SOI
 
 
-def test_idempotent_skip_when_segment_config_matches(
-    tmp_path: Path, fixture_video: Path
-) -> None:
+def test_idempotent_skip_when_segment_config_matches(tmp_path: Path, fixture_video: Path) -> None:
     cfg = _build_config(tmp_path, segment_seconds=2.0)
     db = store.connect(cfg.db_path)
     tables = store.ensure_tables(db)
@@ -175,9 +173,7 @@ def test_force_re_ingests_even_if_indexed(tmp_path: Path, fixture_video: Path) -
         vision_embedder=fake_vision_embedder(),
     )
     process_video(fixture_video, fixture_video.parent, cfg, tables, **args)
-    forced = process_video(
-        fixture_video, fixture_video.parent, cfg, tables, force=True, **args
-    )
+    forced = process_video(fixture_video, fixture_video.parent, cfg, tables, force=True, **args)
     assert not forced.skipped
     assert forced.segments_written == 5
 
@@ -262,12 +258,10 @@ def _has_fts_on_text(tables: store.StoreTables) -> bool:
     return False
 
 
-def test_process_directory_auto_indexes_by_default(
-    ingest_root: Path, tmp_path: Path
-) -> None:
+def test_process_directory_auto_indexes_by_default(ingest_root: Path, tmp_path: Path) -> None:
     """After a successful batch, the FTS index on `text` must exist — without
-    it, `search_text` falls back to vector-only with a noisy warning. The
-    PLAN's hybrid retrieval depends on FTS being built."""
+    it, `search_text` falls back to vector-only with a noisy warning. Hybrid
+    retrieval depends on FTS being built."""
     cfg = _build_config(tmp_path, segment_seconds=2.0)
     db = store.connect(cfg.db_path)
     tables = store.ensure_tables(db)
@@ -284,9 +278,7 @@ def test_process_directory_auto_indexes_by_default(
     assert _has_fts_on_text(tables), "auto_index should have built FTS on `text`"
 
 
-def test_process_directory_auto_index_disabled(
-    ingest_root: Path, tmp_path: Path
-) -> None:
+def test_process_directory_auto_index_disabled(ingest_root: Path, tmp_path: Path) -> None:
     cfg = _build_config(tmp_path, segment_seconds=2.0)
     db = store.connect(cfg.db_path)
     tables = store.ensure_tables(db)
@@ -303,9 +295,7 @@ def test_process_directory_auto_index_disabled(
     assert not _has_fts_on_text(tables)
 
 
-def test_process_directory_no_successes_skips_index(
-    tmp_path: Path
-) -> None:
+def test_process_directory_no_successes_skips_index(tmp_path: Path) -> None:
     """If the batch wrote nothing (empty directory, all failed), there's no
     reason to spin up the FTS builder."""
     empty = tmp_path / "empty"
@@ -325,9 +315,7 @@ def test_process_directory_no_successes_skips_index(
     assert not _has_fts_on_text(tables)
 
 
-def test_search_text_after_ingest_uses_fts_leg(
-    ingest_root: Path, tmp_path: Path
-) -> None:
+def test_search_text_after_ingest_uses_fts_leg(ingest_root: Path, tmp_path: Path) -> None:
     """End-to-end: after `process_directory`, `search_text` should return
     hits that record an `fts` component (the RRF blend of vector + FTS), not
     fall back to vector-only with the warning the user reported."""

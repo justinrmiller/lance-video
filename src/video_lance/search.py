@@ -21,8 +21,7 @@ FTS_INDEX_NAME = "text_idx"
 TEXT_VEC_INDEX_NAME = "text_embedding_idx"
 VISUAL_VEC_INDEX_NAME = "visual_embedding_idx"
 
-# PLAN §10 Session 6 reranker hook lives in rerank.py; this module just plumbs
-# the search modes.
+# This module plumbs the text / visual / multi search modes over LanceDB.
 
 
 # -- result types -------------------------------------------------------------
@@ -42,7 +41,7 @@ class SearchHit:
     components: dict[str, float] = field(default_factory=dict)
 
     def deep_link(self) -> str:
-        """A file://...#t=start,end URL the CLI prints; matches PLAN §7."""
+        """A file://...#t=start,end URL the CLI prints."""
         return f"file://{self.source_path}#t={self.start_s:.1f},{self.end_s:.1f}"
 
     def time_range(self) -> str:
@@ -130,9 +129,7 @@ def _rrf_fuse(
 
 
 def _fetch_video_index(tables: store.StoreTables) -> dict[str, dict[str, Any]]:
-    rows: list[dict[str, Any]] = (
-        tables.videos.search().limit(1_000_000).to_arrow().to_pylist()
-    )
+    rows: list[dict[str, Any]] = tables.videos.search().limit(1_000_000).to_arrow().to_pylist()
     return {r["video_id"]: r for r in rows}
 
 
@@ -177,7 +174,7 @@ def search_text(
 ) -> list[SearchHit]:
     """e5 vector search + FTS BM25 over `text`, fused via RRF.
 
-    PLAN §7 calls this "hybrid". We implement it as two separate searches
+    This is "hybrid" retrieval. We implement it as two separate searches
     fused with RRF rather than going through LanceDB's `query_type='hybrid'`
     so we get consistent behavior regardless of which indexes exist.
     """
@@ -269,7 +266,7 @@ def search_multi(
 
     `visual_weight` is the weight given to the SigLIP-text→frame ranking;
     `1 - visual_weight` is the weight on the e5-text→text ranking. The
-    default 0.4 matches PLAN §8.
+    default is 0.4.
     """
     if not 0.0 <= visual_weight <= 1.0:
         raise ValueError(f"visual_weight {visual_weight} must be in [0, 1]")
@@ -277,12 +274,8 @@ def search_multi(
     text_qvec = text_embedder.encode_query(query)
     vis_qvec = vision_embedder.encode_text(query)
 
-    text_rows = _vector_search(
-        tables.segments, "text_embedding", text_qvec, limit * 3, sql_filter
-    )
-    vis_rows = _vector_search(
-        tables.segments, "visual_embedding", vis_qvec, limit * 3, sql_filter
-    )
+    text_rows = _vector_search(tables.segments, "text_embedding", text_qvec, limit * 3, sql_filter)
+    vis_rows = _vector_search(tables.segments, "visual_embedding", vis_qvec, limit * 3, sql_filter)
 
     fused = _rrf_fuse(
         [text_rows, vis_rows],
@@ -335,7 +328,7 @@ def ensure_indexes(tables: store.StoreTables, *, replace: bool = False) -> Index
             logger.warning("FTS index build failed: %s", exc)
 
     n = segments.count_rows()
-    # PLAN §5.2: IVF_FLAT for small N, IVF_PQ for large; num_partitions = max(8, sqrt(n)).
+    # IVF_FLAT for small N, IVF_PQ for large; num_partitions = max(8, sqrt(n)).
     num_partitions = max(2, int(math.sqrt(max(n, 1))))
     index_type = "IVF_FLAT" if n < 100_000 else "IVF_PQ"
 

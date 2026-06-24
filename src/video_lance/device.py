@@ -21,9 +21,7 @@ def autodetect_device() -> str:
 def resolve_device(device: str) -> str:
     """Map 'auto' to the autodetected device; pass through 'cuda'/'mps'/'cpu'."""
     if device not in VALID_DEVICES:
-        raise ValueError(
-            f"unknown device {device!r}; expected one of {sorted(VALID_DEVICES)}"
-        )
+        raise ValueError(f"unknown device {device!r}; expected one of {sorted(VALID_DEVICES)}")
     if device == "auto":
         return autodetect_device()
     return device

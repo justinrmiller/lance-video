@@ -45,9 +45,8 @@ class Config(BaseModel):
     """Top-level pipeline configuration.
 
     Bundles segmentation and frame-sampling knobs with the model identifiers,
-    device, IO paths, and filter globs the CLI needs. Per PLAN §3.1 the
-    eventual precedence is CLI flags > env (`VL_*`) > TOML > defaults; for now
-    the CLI just constructs this directly from its flags.
+    device, IO paths, and filter globs the CLI needs. The CLI constructs this
+    directly from its flags; the field defaults below are the fallback.
     """
 
     segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)

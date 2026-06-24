@@ -156,7 +156,7 @@ def test_segment_roundtrip_preserves_vectors_and_blobs(tmp_path: Path) -> None:
     tables = ensure_tables(connect(tmp_path / "db"))
     rng = np.random.default_rng(42)
     vid = "abcdef0123456789"
-    payload = (b"a deterministic clip payload " * 32)
+    payload = b"a deterministic clip payload " * 32
     row = _make_segment_row(vid, 0, rng, clip_payload=payload)
     expected_text = list(row.text_embedding)
     expected_visual = list(row.visual_embedding)
@@ -285,9 +285,7 @@ def test_metadata_set_is_upsert(tmp_path: Path) -> None:
 def test_embedding_models_helpers(tmp_path: Path) -> None:
     tables = ensure_tables(connect(tmp_path / "db"))
     assert get_embedding_models(tables) == (None, None)
-    set_embedding_models(
-        tables, text_embed_model="intfloat/foo", vision_embed_model="google/bar"
-    )
+    set_embedding_models(tables, text_embed_model="intfloat/foo", vision_embed_model="google/bar")
     assert get_embedding_models(tables) == ("intfloat/foo", "google/bar")
 
 
