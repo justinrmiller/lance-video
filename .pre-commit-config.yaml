@@ -1,0 +1,45 @@
+# Run on every commit:
+#   uv sync                    # installs pre-commit
+#   uv run pre-commit install  # one-time: wires the git hook
+#
+# Run on demand:
+#   uv run pre-commit run --all-files
+#
+# pytest is intentionally NOT a hook here — it's ~20s and would make
+# `git commit` painful. Run it explicitly (`uv run pytest`) or wire it as a
+# pre-push hook if you want belt-and-braces.
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: [--maxkb=2000]
+      - id: check-merge-conflict
+      - id: mixed-line-ending
+        args: [--fix=lf]
+
+  # ruff: lint (`ruff check --fix`) + format. The tree is ruff-formatted;
+  # `ruff-format` keeps it that way and CI gates on `ruff format --check`.
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.13
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # ty runs from the local venv (`uv run …`) so it uses the same pinned
+  # version as `uv run pytest`. Scoped to src/ via [tool.ty.src] in pyproject.
+  - repo: local
+    hooks:
+      - id: ty
+        name: ty (fast, src/)
+        entry: uv run ty check
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
