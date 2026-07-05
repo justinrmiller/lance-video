@@ -18,9 +18,9 @@ from the CLI and from the module's `__main__` entrypoint.
 
 from __future__ import annotations
 
-import io
 import logging
 import tempfile
+import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -131,7 +131,7 @@ def build_context(
 
 
 def _hit_to_state(hit: search_mod.SearchHit) -> dict[str, Any]:
-    """Pickle-clean dict for the gallery's hidden state row."""
+    """Pickle-clean dict for the results table's hidden state row."""
     return {
         "segment_id": hit.segment_id,
         "video_id": hit.video_id,
@@ -146,39 +146,16 @@ def _hit_to_state(hit: search_mod.SearchHit) -> dict[str, Any]:
     }
 
 
-def _placeholder_thumb() -> Image.Image:
-    return Image.new("RGB", (160, 120), (60, 60, 60))
+SEARCH_RESULT_COLUMNS = ["#", "score", "path", "time", "text"]
 
 
-def _load_thumb(tables: store.StoreTables, segment_id: str) -> Image.Image:
-    try:
-        jpeg = store.read_segment_blob(tables, segment_id, "keyframe_jpeg")
-    except KeyError:
-        logger.warning("no keyframe_jpeg blob for %s", segment_id)
-        return _placeholder_thumb()
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to read keyframe for %s: %s", segment_id, exc)
-        return _placeholder_thumb()
-
-    try:
-        return Image.open(io.BytesIO(jpeg)).convert("RGB")
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("invalid JPEG for %s: %s", segment_id, exc)
-        return _placeholder_thumb()
-
-
-def _caption(rank: int, hit: search_mod.SearchHit) -> str:
+def _result_row(rank: int, hit: search_mod.SearchHit) -> list[Any]:
+    """One results-table row: rank, score, path, time range, text snippet."""
     path = hit.relative_path or hit.video_id
     snippet = (hit.text or "").strip().replace("\n", " ")
     if len(snippet) > 90:
         snippet = snippet[:87] + "..."
-    parts = [
-        f"{rank}. [{hit.score:.3f}] {path}",
-        f"   {hit.time_range()}",
-    ]
-    if snippet:
-        parts.append(f'   "{snippet}"')
-    return "\n".join(parts)
+    return [rank, round(hit.score, 3), path, hit.time_range(), snippet]
 
 
 def run_search(
@@ -189,13 +166,13 @@ def run_search(
     limit: int,
     sql_filter: str,
     visual_weight: float,
-) -> tuple[list[tuple[Image.Image, str]], list[dict[str, Any]]]:
-    """Execute a search, return `(gallery_rows, raw_hits)`.
+) -> tuple[list[list[Any]], list[dict[str, Any]]]:
+    """Execute a search, return `(table_rows, raw_hits)`.
 
-    `gallery_rows` is a list of `(PIL image, caption)` tuples for `gr.Gallery`.
-    `raw_hits` is a parallel list of dicts the UI stashes in a `gr.State` so
-    later events (click → play clip) can resolve the chosen segment back to
-    its LanceDB row.
+    `table_rows` is a list of `[#, score, path, time, text]` rows for the
+    results `gr.Dataframe` (columns `SEARCH_RESULT_COLUMNS`). `raw_hits` is a
+    parallel list of dicts the UI stashes in a `gr.State` so a later row-click
+    can resolve the chosen segment back to its LanceDB row.
     """
     mode_clean = (mode or "").strip().lower()
     if mode_clean not in ALLOWED_MODES:
@@ -240,12 +217,12 @@ def run_search(
             sql_filter=sql,
         )
 
-    gallery: list[tuple[Image.Image, str]] = []
+    rows: list[list[Any]] = []
     raw: list[dict[str, Any]] = []
     for rank, hit in enumerate(hits, start=1):
-        gallery.append((_load_thumb(ctx.tables, hit.segment_id), _caption(rank, hit)))
+        rows.append(_result_row(rank, hit))
         raw.append(_hit_to_state(hit))
-    return gallery, raw
+    return rows, raw
 
 
 # -- clip playback ------------------------------------------------------------
@@ -256,7 +233,7 @@ def play_clip(
     raw_hits: list[dict[str, Any]],
     selected_index: int | None,
 ) -> str | None:
-    """Resolve a gallery click to a playable MP4 path.
+    """Resolve a results-table row click to a playable MP4 path.
 
     Reads the segment's `clip_bytes` Blob V1 column out of LanceDB, writes
     it to a tempfile (Gradio's `gr.Video` wants a path), and returns the
@@ -302,10 +279,11 @@ SEGMENTS_COLUMNS = ["idx", "start_s", "end_s", "text"]
 def list_videos(tables: store.StoreTables) -> list[dict[str, Any]]:
     """All rows from the `videos` table, augmented with each video's segment
     count. Used by the Database tab's top dataframe."""
-    rows = tables.videos.search().limit(1_000_000).to_arrow().to_pylist()
+    n_videos = int(tables.videos.count_rows())
+    rows = tables.videos.search().limit(max(n_videos, 1)).to_arrow().to_pylist()
     out: list[dict[str, Any]] = []
     for r in rows:
-        segs = store.get_segments_for_video(tables, str(r["video_id"]))
+        n_segs = store.count_segments_for_video(tables, str(r["video_id"]))
         size_bytes = int(r.get("size_bytes") or 0)
         out.append(
             {
@@ -317,7 +295,7 @@ def list_videos(tables: store.StoreTables) -> list[dict[str, Any]]:
                 "height": int(r.get("height") or 0),
                 "size_mb": round(size_bytes / (1024 * 1024), 2),
                 "segment_seconds": float(r.get("segment_seconds") or 0.0),
-                "segments": len(segs),
+                "segments": n_segs,
             }
         )
     return out
@@ -484,10 +462,11 @@ def run_ingest_streaming(
     `cancels=[run_event]`, so Gradio terminates the generator between yields
     — no custom cancellation Event needed.
 
-    All embedder model identifiers are taken from `ctx` so re-ingesting
-    against a DB that was built with different models is rejected by the
-    persistent `_metadata` row, not silently rebuilt. The `whisper_model`
-    can differ across runs (it's not stored).
+    All embedder model identifiers are taken from `ctx` (which resolves them
+    from the persisted `_metadata` row when the store is non-empty), and
+    `store.assert_or_set_embedding_models` rejects an ingest whose models differ
+    from what the store was built with rather than silently mixing embedding
+    spaces. The `whisper_model` can differ across runs (it's not stored).
     """
     s = str(root).strip()
     if not s:
@@ -517,12 +496,20 @@ def run_ingest_streaming(
         yield 1.0, f"no videos matched under {root}"
         return
 
+    # Guard before loading any model weights so an aborted ingest is cheap
+    # (matches the ordering in cli.ingest).
+    try:
+        store.assert_or_set_embedding_models(
+            ctx.tables,
+            text_embed_model=cfg.text_embed_model,
+            vision_embed_model=cfg.vision_embed_model,
+            force=force,
+        )
+    except store.EmbeddingModelMismatch as exc:
+        yield 1.0, f"ingest aborted: {exc}"
+        return
+
     transcriber = ctx.get_transcriber()
-    store.set_embedding_models(
-        ctx.tables,
-        text_embed_model=cfg.text_embed_model,
-        vision_embed_model=cfg.vision_embed_model,
-    )
 
     log: list[str] = [f"discovered {len(paths)} video(s) under {root}"]
     n_ok = 0
@@ -589,7 +576,7 @@ def build_app(ctx: AppContext) -> Any:
         limit: int,
         sql_filter: str,
         visual_weight: float,
-    ) -> tuple[list[tuple[Image.Image, str]], list[dict[str, Any]]]:
+    ) -> tuple[list[list[Any]], list[dict[str, Any]]]:
         try:
             return run_search(ctx, query, mode, image, limit, sql_filter, visual_weight)
         except ValueError as exc:
@@ -675,7 +662,8 @@ def build_app(ctx: AppContext) -> Any:
             force=force,
         )
 
-    # Theme moved from Blocks() to launch() in Gradio 6.x.
+    # Theme and css moved from Blocks() to launch() in Gradio 6.x — see `launch`,
+    # which hides the footer there.
     with gr.Blocks(title="video-lance") as demo:
         gr.Markdown(
             f"# 🎞️ video-lance\n"
@@ -724,17 +712,16 @@ def build_app(ctx: AppContext) -> Any:
                         )
                         search_btn = gr.Button("Search", variant="primary")
                     with gr.Column(scale=3):
-                        gallery = gr.Gallery(
-                            label="Results · click a tile to play the clip",
-                            columns=3,
-                            height=520,
-                            object_fit="cover",
-                            show_label=True,
-                        )
                         video = gr.Video(
                             label="Selected clip",
                             height=320,
                             autoplay=True,
+                        )
+                        results_table = gr.Dataframe(
+                            headers=SEARCH_RESULT_COLUMNS,
+                            label="Results · click a row to play the clip",
+                            interactive=False,
+                            wrap=True,
                         )
 
                 raw_hits_state = gr.State([])
@@ -749,7 +736,7 @@ def build_app(ctx: AppContext) -> Any:
                         filter_in,
                         visual_weight_in,
                     ],
-                    outputs=[gallery, raw_hits_state],
+                    outputs=[results_table, raw_hits_state],
                 )
                 query_in.submit(
                     fn=_on_search,
@@ -761,9 +748,9 @@ def build_app(ctx: AppContext) -> Any:
                         filter_in,
                         visual_weight_in,
                     ],
-                    outputs=[gallery, raw_hits_state],
+                    outputs=[results_table, raw_hits_state],
                 )
-                gallery.select(
+                results_table.select(
                     fn=_on_select,
                     inputs=[raw_hits_state],
                     outputs=[video],
@@ -927,12 +914,24 @@ def launch(
     share: bool = False,
 ) -> None:
     """Build the context, build the Gradio app, and start the server."""
+    # Gradio 6.19 still references Starlette's `HTTP_422_UNPROCESSABLE_ENTITY`
+    # (renamed to `..._CONTENT` in newer Starlette), which warns on every queue
+    # request. Silence just that message until Gradio catches up; unrelated
+    # warnings are unaffected.
+    warnings.filterwarnings(
+        "ignore",
+        message="'HTTP_422_UNPROCESSABLE_ENTITY' is deprecated",
+    )
+
     ctx = build_context(db_path, device=device)
     demo = build_app(ctx)
     demo.launch(
         server_name=host,
         server_port=port,
         share=share,
+        # Hide Gradio's footer: both "Use via API" and "Built with Gradio ·
+        # Settings" live inside the single <footer> element.
+        css="footer {display: none !important;}",
         theme=gr.themes.Soft(),
     )
 

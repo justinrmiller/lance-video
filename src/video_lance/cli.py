@@ -103,11 +103,16 @@ def ingest(
 
     db = store.connect(cfg.db_path)
     tables = store.ensure_tables(db)
-    store.set_embedding_models(
-        tables,
-        text_embed_model=cfg.text_embed_model,
-        vision_embed_model=cfg.vision_embed_model,
-    )
+    try:
+        store.assert_or_set_embedding_models(
+            tables,
+            text_embed_model=cfg.text_embed_model,
+            vision_embed_model=cfg.vision_embed_model,
+            force=force,
+        )
+    except store.EmbeddingModelMismatch as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=2) from exc
 
     typer.echo("loading transcriber model")
     transcriber = get_transcriber(cfg.whisper_model, device=cfg.device)

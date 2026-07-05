@@ -7,20 +7,20 @@ name = "video-lance"
 version = "0.1.0"
 description = "Video indexing pipeline with LanceDB blob columns"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.13",
     "faster-whisper>=1.2",
-    "Pillow>=12.2",
-    "sentence-transformers>=5.5",
-    "transformers>=5.11",
-    "torch>=2.12",
-    "numpy>=2.4",
+    "Pillow>=12.3",
+    "sentence-transformers>=5.6",
+    "transformers>=5.13",
+    "torch>=2.12.1",
+    "numpy>=2.5",
     "sentencepiece>=0.2",
-    "lancedb>=0.33",
-    "pylance>=7.0",
+    "lancedb>=0.34",
+    "pylance>=8.0",
     "pyarrow>=24.0",
-    "gradio>=6.18",
+    "gradio>=6.19",
 ]
 
 [project.scripts]
@@ -28,11 +28,11 @@ video-lance = "video_lance.cli:app"
 
 [dependency-groups]
 dev = [
-    "pytest>=9.0",
+    "pytest>=9.1",
     "pytest-asyncio>=1.4",
     "pytest-cov>=7.1",
-    "ruff>=0.15",
-    "ty>=0.0.49",
+    "ruff>=0.15.20",
+    "ty>=0.0.56",
     "pre-commit>=4.6",
 ]
 
@@ -41,7 +41,7 @@ packages = ["src/video_lance"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py311"
+target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
@@ -58,7 +58,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 include = ["src"]
 
 [tool.ty.environment]
-python-version = "3.11"
+python-version = "3.12"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

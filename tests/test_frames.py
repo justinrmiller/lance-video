@@ -8,7 +8,12 @@ from PIL import Image
 
 from tests.fixtures.make_fixture import COLOR_RGB, color_at
 from video_lance.config import FrameSamplingConfig
-from video_lance.frames import FrameExtractError, extract_keyframe
+from video_lance.frames import (
+    _ACCURATE_SEEK_WINDOW,
+    FrameExtractError,
+    _seek_args,
+    extract_keyframe,
+)
 
 
 def _center_pixel(image: Image.Image) -> tuple[int, int, int]:
@@ -70,6 +75,29 @@ def test_frame_missing_file(tmp_path: Path) -> None:
 def test_frame_negative_time_rejected(fixture_video: Path) -> None:
     with pytest.raises(ValueError):
         extract_keyframe(fixture_video, -1.0, FrameSamplingConfig())
+
+
+def test_seek_args_small_offset_uses_output_seek() -> None:
+    # For a small t_s, seek after -i (frame-accurate, cheap): -i PATH -ss t_s.
+    args = _seek_args(Path("/x.mp4"), 3.0)
+    assert args == ["-i", "/x.mp4", "-ss", "3.0"]
+    assert args.index("-ss") > args.index("-i")
+
+
+def test_seek_args_large_offset_uses_two_stage_seek() -> None:
+    # For a large t_s, coarse input seek before -i then a fine output seek after.
+    t_s = _ACCURATE_SEEK_WINDOW + 30.0
+    args = _seek_args(Path("/x.mp4"), t_s)
+    # Layout: ["-ss", coarse, "-i", path, "-ss", fine]
+    assert args[0] == "-ss"  # coarse seek precedes -i
+    i_idx = args.index("-i")
+    coarse = float(args[1])
+    assert args[i_idx + 1] == "/x.mp4"
+    assert args[i_idx + 2] == "-ss"  # fine seek follows -i
+    fine = float(args[i_idx + 3])
+    # The two seeks compose back to the requested timestamp.
+    assert coarse == pytest.approx(t_s - _ACCURATE_SEEK_WINDOW)
+    assert coarse + fine == pytest.approx(t_s)
 
 
 def test_frame_bad_video_raises(tmp_path: Path) -> None:

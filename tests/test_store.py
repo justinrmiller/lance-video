@@ -14,16 +14,20 @@ from video_lance.schema import (
     VISION_EMBED_DIM,
 )
 from video_lance.store import (
+    EmbeddingModelMismatch,
     SegmentRow,
     VideoRow,
     _list_table_names,
+    assert_or_set_embedding_models,
     connect,
+    count_segments_for_video,
     delete_video,
     ensure_tables,
     get_embedding_models,
     get_metadata,
     get_segments_for_video,
     get_video,
+    get_videos_by_ids,
     read_segment_blob,
     segment_id_for,
     set_embedding_models,
@@ -287,6 +291,77 @@ def test_embedding_models_helpers(tmp_path: Path) -> None:
     assert get_embedding_models(tables) == (None, None)
     set_embedding_models(tables, text_embed_model="intfloat/foo", vision_embed_model="google/bar")
     assert get_embedding_models(tables) == ("intfloat/foo", "google/bar")
+
+
+# -- embedding-model guard ---------------------------------------------------
+
+
+def test_assert_or_set_records_on_fresh_store(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    assert_or_set_embedding_models(tables, text_embed_model="text-a", vision_embed_model="vis-a")
+    assert get_embedding_models(tables) == ("text-a", "vis-a")
+
+
+def test_assert_or_set_allows_matching_models(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    set_embedding_models(tables, text_embed_model="text-a", vision_embed_model="vis-a")
+    # Same ids: no error, no change.
+    assert_or_set_embedding_models(tables, text_embed_model="text-a", vision_embed_model="vis-a")
+    assert get_embedding_models(tables) == ("text-a", "vis-a")
+
+
+def test_assert_or_set_rejects_text_mismatch(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    set_embedding_models(tables, text_embed_model="text-a", vision_embed_model="vis-a")
+    with pytest.raises(EmbeddingModelMismatch, match="text"):
+        assert_or_set_embedding_models(
+            tables, text_embed_model="text-b", vision_embed_model="vis-a"
+        )
+    # Stored ids must be left untouched by the rejected call.
+    assert get_embedding_models(tables) == ("text-a", "vis-a")
+
+
+def test_assert_or_set_rejects_vision_mismatch(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    set_embedding_models(tables, text_embed_model="text-a", vision_embed_model="vis-a")
+    with pytest.raises(EmbeddingModelMismatch, match="vision"):
+        assert_or_set_embedding_models(
+            tables, text_embed_model="text-a", vision_embed_model="vis-b"
+        )
+
+
+def test_assert_or_set_force_overwrites(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    set_embedding_models(tables, text_embed_model="text-a", vision_embed_model="vis-a")
+    assert_or_set_embedding_models(
+        tables, text_embed_model="text-b", vision_embed_model="vis-b", force=True
+    )
+    assert get_embedding_models(tables) == ("text-b", "vis-b")
+
+
+# -- scoped video/segment reads ----------------------------------------------
+
+
+def test_get_videos_by_ids_scopes_to_requested(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    for vid in ("aaaa1111aaaa1111", "bbbb2222bbbb2222", "cccc3333cccc3333"):
+        upsert_video(tables, _make_video_row(vid))
+    got = get_videos_by_ids(tables, ["aaaa1111aaaa1111", "cccc3333cccc3333", "aaaa1111aaaa1111"])
+    assert set(got) == {"aaaa1111aaaa1111", "cccc3333cccc3333"}
+
+
+def test_get_videos_by_ids_empty(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    assert get_videos_by_ids(tables, []) == {}
+
+
+def test_count_segments_for_video(tmp_path: Path) -> None:
+    tables = ensure_tables(connect(tmp_path / "db"))
+    rng = np.random.default_rng(7)
+    vid = "dddd4444dddd4444"
+    upsert_segments(tables, [_make_segment_row(vid, i, rng) for i in range(4)])
+    assert count_segments_for_video(tables, vid) == 4
+    assert count_segments_for_video(tables, "missingmissing00") == 0
 
 
 def test_read_segment_blob_missing_id_raises(tmp_path: Path) -> None:

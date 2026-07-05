@@ -222,15 +222,40 @@ def upsert_segments(tables: StoreTables, rows: Iterable[SegmentRow]) -> int:
     return len(payload)
 
 
+def count_segments_for_video(tables: StoreTables, video_id: str) -> int:
+    """Number of segments stored for `video_id` (no row payload transferred)."""
+    return int(tables.segments.count_rows(f"video_id = '{_escape_sql_str(video_id)}'"))
+
+
 def get_segments_for_video(tables: StoreTables, video_id: str) -> list[dict[str, Any]]:
+    where = f"video_id = '{_escape_sql_str(video_id)}'"
+    n = int(tables.segments.count_rows(where))
+    if n == 0:
+        return []
     rows: list[dict[str, Any]] = (
-        tables.segments.search()
-        .where(f"video_id = '{_escape_sql_str(video_id)}'")
-        .limit(1_000_000)
+        tables.segments.search().where(where).limit(n).to_arrow().to_pylist()
+    )
+    return rows
+
+
+def get_videos_by_ids(tables: StoreTables, video_ids: Iterable[str]) -> dict[str, dict[str, Any]]:
+    """Fetch just the `videos` rows for `video_ids`, keyed by video_id.
+
+    Used to resolve search hits back to their source video without loading the
+    whole `videos` table on every query.
+    """
+    ids = sorted({vid for vid in video_ids})
+    if not ids:
+        return {}
+    quoted = ", ".join(f"'{_escape_sql_str(vid)}'" for vid in ids)
+    rows: list[dict[str, Any]] = (
+        tables.videos.search()
+        .where(f"video_id IN ({quoted})")
+        .limit(len(ids))
         .to_arrow()
         .to_pylist()
     )
-    return rows
+    return {str(r["video_id"]): r for r in rows}
 
 
 # -- blob reads ---------------------------------------------------------------
@@ -307,3 +332,49 @@ def set_embedding_models(
 def get_embedding_models(tables: StoreTables) -> tuple[str | None, str | None]:
     md = get_metadata(tables)
     return md.get(KEY_TEXT_MODEL), md.get(KEY_VISION_MODEL)
+
+
+class EmbeddingModelMismatch(RuntimeError):
+    """Raised when an ingest requests embedding models that differ from the
+    ones the store was originally built with."""
+
+
+def assert_or_set_embedding_models(
+    tables: StoreTables,
+    *,
+    text_embed_model: str,
+    vision_embed_model: str,
+    force: bool = False,
+) -> None:
+    """Record the embedding model identifiers, or reject a mismatch.
+
+    On a fresh store (no identifiers persisted yet) this records the given
+    models. On a store that already has identifiers, it raises
+    `EmbeddingModelMismatch` if either requested model differs from the stored
+    one — writing vectors from a different model into the same fixed-dim
+    column would silently corrupt search, since the dimensions can still match.
+
+    `force=True` overrides the check and overwrites the stored identifiers (the
+    caller is then responsible for having re-embedded every existing segment,
+    e.g. via a full `--force` re-ingest of the whole store).
+    """
+    stored_text, stored_vision = get_embedding_models(tables)
+
+    if not force and stored_text is not None and stored_text != text_embed_model:
+        raise EmbeddingModelMismatch(
+            f"store was built with text embedding model {stored_text!r}, "
+            f"refusing to ingest with {text_embed_model!r}; re-ingest the whole "
+            f"store with --force to switch models"
+        )
+    if not force and stored_vision is not None and stored_vision != vision_embed_model:
+        raise EmbeddingModelMismatch(
+            f"store was built with vision embedding model {stored_vision!r}, "
+            f"refusing to ingest with {vision_embed_model!r}; re-ingest the whole "
+            f"store with --force to switch models"
+        )
+
+    set_embedding_models(
+        tables,
+        text_embed_model=text_embed_model,
+        vision_embed_model=vision_embed_model,
+    )

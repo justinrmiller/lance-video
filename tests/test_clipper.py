@@ -4,7 +4,12 @@ from pathlib import Path
 
 import pytest
 
-from video_lance.clipper import ClipError, extract_clip_bytes
+from video_lance.clipper import (
+    _ACCURATE_SEEK_WINDOW,
+    ClipError,
+    _accurate_seek_args,
+    extract_clip_bytes,
+)
 from video_lance.probe import get_meta
 
 
@@ -28,6 +33,26 @@ def test_clip_extraction_precise(fixture_video: Path, tmp_path: Path) -> None:
     assert len(data) > 0
     _, meta = _write_and_probe(tmp_path, data, "precise.mp4")
     assert meta.duration_s == pytest.approx(3.0, abs=0.5)
+
+
+def test_accurate_seek_args_small_offset_output_seeks() -> None:
+    # Small start: output seek after -i (frame-accurate): -i PATH -ss start.
+    args = _accurate_seek_args(Path("/x.mp4"), 2.0)
+    assert args == ["-i", "/x.mp4", "-ss", "2.0"]
+    assert args.index("-ss") > args.index("-i")
+
+
+def test_accurate_seek_args_large_offset_two_stage() -> None:
+    start = _ACCURATE_SEEK_WINDOW + 25.0
+    args = _accurate_seek_args(Path("/x.mp4"), start)
+    # Layout: ["-ss", coarse, "-i", PATH, "-ss", fine]
+    assert args[0] == "-ss"
+    i_idx = args.index("-i")
+    coarse = float(args[1])
+    assert args[i_idx + 2] == "-ss"  # fine seek follows -i (accurate)
+    fine = float(args[i_idx + 3])
+    assert coarse == pytest.approx(start - _ACCURATE_SEEK_WINDOW)
+    assert coarse + fine == pytest.approx(start)
 
 
 def test_clip_rejects_invalid_window(fixture_video: Path) -> None:

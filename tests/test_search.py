@@ -134,6 +134,30 @@ def test_search_text_returns_hits_with_filled_fields(ingested_db: store.StoreTab
     assert any(h.components for h in hits)
 
 
+def test_search_text_scores_normalized_like_visual(ingested_db: store.StoreTables) -> None:
+    # Hybrid (RRF) scores are rescaled to (0, 1] so they're comparable in range
+    # to the cosine similarities the visual path surfaces, rather than the raw
+    # ~0.01 RRF values.
+    ensure_indexes(ingested_db)
+    text_hits = search_text(ingested_db, fake_text_embedder(), "red.", limit=5)
+    assert text_hits
+    assert all(0.0 < h.score <= 1.0 for h in text_hits)
+    # Best hit sits at the top of the normalized range.
+    assert max(h.score for h in text_hits) == pytest.approx(1.0)
+
+    visual_hits = search_visual(ingested_db, fake_vision_embedder(), query="red", limit=5)
+    assert all(h.score <= 1.0 for h in visual_hits)
+
+
+def test_search_multi_scores_normalized(ingested_db: store.StoreTables) -> None:
+    hits = search_multi(
+        ingested_db, fake_text_embedder(), fake_vision_embedder(), "anything", limit=5
+    )
+    assert hits
+    assert all(0.0 < h.score <= 1.0 for h in hits)
+    assert max(h.score for h in hits) == pytest.approx(1.0)
+
+
 def test_search_text_fts_finds_exact_word(ingested_db: store.StoreTables) -> None:
     ensure_indexes(ingested_db)
     hits = search_text(ingested_db, fake_text_embedder(), "red", limit=5)

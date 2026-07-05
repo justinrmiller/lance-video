@@ -32,6 +32,23 @@ def _downscale_long_edge(image: Image.Image, max_long_edge: int) -> Image.Image:
     return image.resize(new_size, Image.Resampling.LANCZOS)
 
 
+# When `t_s` is beyond this many seconds we do a coarse input seek to
+# `t_s - _ACCURATE_SEEK_WINDOW` (fast, keyframe-granular) followed by a fine
+# output seek across the remaining window (frame-accurate). For small `t_s` we
+# just output-seek from the start. This lands on the exact requested timestamp
+# instead of the nearest preceding keyframe, which matters for long-GOP video.
+_ACCURATE_SEEK_WINDOW = 10.0
+
+
+def _seek_args(path: Path, t_s: float) -> list[str]:
+    """Build the ffmpeg seek arguments for a frame-accurate grab at `t_s`."""
+    if t_s <= _ACCURATE_SEEK_WINDOW:
+        # Output seek from the start: fully accurate, cheap for small offsets.
+        return ["-i", str(path), "-ss", f"{t_s}"]
+    coarse = t_s - _ACCURATE_SEEK_WINDOW
+    return ["-ss", f"{coarse}", "-i", str(path), "-ss", f"{_ACCURATE_SEEK_WINDOW}"]
+
+
 def extract_keyframe(
     path: Path,
     t_s: float,
@@ -43,6 +60,9 @@ def extract_keyframe(
     PIL image (useful for re-encoding into embedders without going back to
     disk); jpeg_bytes is the same image encoded as JPEG at
     `cfg.jpeg_quality` and downscaled to a long edge of `cfg.max_long_edge`.
+
+    Seeking is frame-accurate (see `_seek_args`) so the extracted frame matches
+    the requested timestamp rather than the nearest preceding keyframe.
     """
     if not path.exists():
         raise FileNotFoundError(path)
@@ -54,10 +74,7 @@ def extract_keyframe(
         "-nostdin",
         "-loglevel",
         "error",
-        "-ss",
-        f"{t_s}",
-        "-i",
-        str(path),
+        *_seek_args(path, t_s),
         "-frames:v",
         "1",
         "-f",

@@ -128,9 +128,15 @@ def _rrf_fuse(
     return [(sid, score, components[sid]) for sid, score in items]
 
 
-def _fetch_video_index(tables: store.StoreTables) -> dict[str, dict[str, Any]]:
-    rows: list[dict[str, Any]] = tables.videos.search().limit(1_000_000).to_arrow().to_pylist()
-    return {r["video_id"]: r for r in rows}
+def _fetch_video_index(
+    tables: store.StoreTables, rows: list[dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Resolve the `videos` rows referenced by `rows`, keyed by video_id.
+
+    Only the videos actually referenced by the current result set are read,
+    rather than scanning the entire `videos` table on every query.
+    """
+    return store.get_videos_by_ids(tables, (r["video_id"] for r in rows))
 
 
 def _hit_from_row(
@@ -161,6 +167,26 @@ def _cosine_similarity_from_distance(distance: float) -> float:
     return 1.0 - float(distance)
 
 
+def _normalize_fused_scores(
+    fused: list[tuple[str, float, dict[str, float]]],
+) -> list[tuple[str, float, dict[str, float]]]:
+    """Rescale RRF fused scores into `(0, 1]` by dividing by the max.
+
+    Raw RRF scores are rank-derived and tiny (e.g. ~0.01–0.03), which makes
+    them look far worse than the cosine similarities the single-source search
+    paths surface even when they're the top result. Dividing by the max puts
+    the best hit at `1.0` and keeps the relative gaps between hits, so the
+    `score` field is comparable across search modes for display. The raw
+    per-source contributions are preserved untouched in `components`.
+    """
+    if not fused:
+        return fused
+    top = max(score for _, score, _ in fused)
+    if top <= 0.0:
+        return fused
+    return [(sid, score / top, comp) for sid, score, comp in fused]
+
+
 # -- search modes -------------------------------------------------------------
 
 
@@ -187,15 +213,17 @@ def search_text(
     except Exception as exc:  # noqa: BLE001 - want to fall back rather than fail the whole search
         logger.warning("FTS unavailable, falling back to vector-only text search: %s", exc)
 
-    videos = _fetch_video_index(tables)
+    videos = _fetch_video_index(tables, vec_rows + fts_rows)
     rows_by_sid: dict[str, dict[str, Any]] = {r["segment_id"]: r for r in vec_rows + fts_rows}
 
     if fts_rows:
-        fused = _rrf_fuse(
-            [vec_rows, fts_rows],
-            weights=[0.5, 0.5],
-            limit=limit,
-            labels=("vector", "fts"),
+        fused = _normalize_fused_scores(
+            _rrf_fuse(
+                [vec_rows, fts_rows],
+                weights=[0.5, 0.5],
+                limit=limit,
+                labels=("vector", "fts"),
+            )
         )
         return [
             _hit_from_row(rows_by_sid[sid], videos=videos, score=score, components=components)
@@ -240,7 +268,7 @@ def search_visual(
         qvec = vision_embedder.encode_text(query)
 
     rows = _vector_search(tables.segments, "visual_embedding", qvec, limit, sql_filter)
-    videos = _fetch_video_index(tables)
+    videos = _fetch_video_index(tables, rows)
     return [
         _hit_from_row(
             r,
@@ -277,13 +305,15 @@ def search_multi(
     text_rows = _vector_search(tables.segments, "text_embedding", text_qvec, limit * 3, sql_filter)
     vis_rows = _vector_search(tables.segments, "visual_embedding", vis_qvec, limit * 3, sql_filter)
 
-    fused = _rrf_fuse(
-        [text_rows, vis_rows],
-        weights=[1.0 - visual_weight, visual_weight],
-        limit=limit,
-        labels=("text", "visual"),
+    fused = _normalize_fused_scores(
+        _rrf_fuse(
+            [text_rows, vis_rows],
+            weights=[1.0 - visual_weight, visual_weight],
+            limit=limit,
+            labels=("text", "visual"),
+        )
     )
-    videos = _fetch_video_index(tables)
+    videos = _fetch_video_index(tables, text_rows + vis_rows)
     rows_by_sid: dict[str, dict[str, Any]] = {r["segment_id"]: r for r in text_rows + vis_rows}
     return [
         _hit_from_row(rows_by_sid[sid], videos=videos, score=score, components=components)
@@ -301,6 +331,21 @@ class IndexStatus:
     vec_visual: str
 
 
+# IVF index training (kmeans + PQ codebook) needs a floor of rows; below this
+# LanceDB refuses. We check the row count up front and report `skipped` rather
+# than relying on the wording of the exception LanceDB would otherwise raise.
+_MIN_VECTOR_INDEX_ROWS = 256
+
+
+def _existing_index_names(segments: Any) -> set[str]:
+    """Names of indexes already present on the segments table."""
+    try:
+        return {getattr(idx, "name", "") or "" for idx in segments.list_indices()}
+    except Exception as exc:  # noqa: BLE001 - treat an unreadable index list as "none"
+        logger.warning("could not list existing indexes: %s", exc)
+        return set()
+
+
 def ensure_indexes(tables: store.StoreTables, *, replace: bool = False) -> IndexStatus:
     """Build (or rebuild) the segment indexes the search paths benefit from.
 
@@ -309,30 +354,38 @@ def ensure_indexes(tables: store.StoreTables, *, replace: bool = False) -> Index
       on large tables but aren't required — brute-force search works on
       unindexed columns.
 
-    On a small table (< 256 rows) LanceDB refuses to train an IVF_PQ index;
-    we catch that and report `skipped` so search still works. With `replace`,
-    existing indexes are dropped and rebuilt; otherwise we leave them alone.
+    Status is decided from observable state — which indexes already exist
+    (`list_indices`) and the row count — rather than by parsing the text of
+    LanceDB exceptions, so a wording change in a future LanceDB release can't
+    silently mislabel an existing index or a genuine failure. Below
+    `_MIN_VECTOR_INDEX_ROWS` rows the vector index build is reported as skipped
+    so search still works. With `replace`, existing indexes are dropped and
+    rebuilt; otherwise they're left alone.
     """
     segments = tables.segments
+    existing = _existing_index_names(segments)
 
     # FTS — works on any row count.
-    try:
-        segments.create_fts_index("text", replace=replace, name=FTS_INDEX_NAME)
-        fts_status = "ok"
-    except Exception as exc:  # noqa: BLE001
-        msg = str(exc).lower()
-        if "already exists" in msg:
-            fts_status = "exists"
-        else:
+    if FTS_INDEX_NAME in existing and not replace:
+        fts_status = "exists"
+    else:
+        try:
+            segments.create_fts_index("text", replace=replace, name=FTS_INDEX_NAME)
+            fts_status = "ok"
+        except Exception as exc:  # noqa: BLE001
             fts_status = f"skipped: {exc}"
             logger.warning("FTS index build failed: %s", exc)
 
     n = segments.count_rows()
-    # IVF_FLAT for small N, IVF_PQ for large; num_partitions = max(8, sqrt(n)).
+    # IVF_FLAT for small N, IVF_PQ for large; num_partitions = max(2, sqrt(n)).
     num_partitions = max(2, int(math.sqrt(max(n, 1))))
     index_type = "IVF_FLAT" if n < 100_000 else "IVF_PQ"
 
     def _build_vec_index(column: str, index_name: str) -> str:
+        if index_name in existing and not replace:
+            return "exists"
+        if n < _MIN_VECTOR_INDEX_ROWS:
+            return f"skipped (need >= {_MIN_VECTOR_INDEX_ROWS} rows; have {n})"
         try:
             segments.create_index(
                 metric="cosine",
@@ -343,12 +396,7 @@ def ensure_indexes(tables: store.StoreTables, *, replace: bool = False) -> Index
                 name=index_name,
             )
             return "ok"
-        except Exception as exc:  # noqa: BLE001
-            msg = str(exc).lower()
-            if "already exists" in msg and not replace:
-                return "exists"
-            if "not enough" in msg or "too few" in msg or "requires" in msg:
-                return f"skipped (need more rows; have {n})"
+        except Exception as exc:  # noqa: BLE001 - residual unexpected failure
             logger.warning("vector index on %s failed: %s", column, exc)
             return f"skipped: {exc}"
 

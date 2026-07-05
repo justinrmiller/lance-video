@@ -170,7 +170,10 @@ class ClipStage:
 
     def run(self, ctx: PipelineContext) -> StageResult:
         for s in ctx.segments:
-            s.clip_bytes = clipper.extract_clip_bytes(ctx.path, s.start_s, s.end_s)
+            # precise=True so the stored clip starts exactly at s.start_s and
+            # aligns with the transcript text mapped to the same window (stream
+            # copy would snap the start to the nearest preceding keyframe).
+            s.clip_bytes = clipper.extract_clip_bytes(ctx.path, s.start_s, s.end_s, precise=True)
         return StageResult(ok=True)
 
 

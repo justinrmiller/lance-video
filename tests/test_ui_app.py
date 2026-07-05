@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import io
 import shutil
 from pathlib import Path
 
@@ -13,11 +12,12 @@ from video_lance.config import Config, FrameSamplingConfig, SegmentationConfig
 from video_lance.pipeline import process_video
 from video_lance.ui_app import (
     DISCOVER_COLUMNS,
+    SEARCH_RESULT_COLUMNS,
     SEGMENTS_COLUMNS,
     VIDEOS_COLUMNS,
     AppContext,
-    _caption,
     _hit_to_state,
+    _result_row,
     build_context,
     db_stats_markdown,
     delete_video_action,
@@ -70,13 +70,16 @@ def test_run_search_text(ctx: AppContext) -> None:
 
     ensure_indexes(ctx.tables)
 
-    gallery, raw = run_search(ctx, "red.", "text", None, 5, "", 0.4)
-    assert len(gallery) <= 5
-    assert len(raw) == len(gallery)
-    for img, caption in gallery:
-        assert isinstance(img, Image.Image)
-        assert img.size[0] > 0 and img.size[1] > 0
-        assert caption.startswith(tuple(f"{i}. [" for i in range(1, 6)))
+    rows, raw = run_search(ctx, "red.", "text", None, 5, "", 0.4)
+    assert len(rows) <= 5
+    assert len(raw) == len(rows)
+    for rank, row in enumerate(rows, start=1):
+        # Row shape matches the table columns: [#, score, path, time, text].
+        assert len(row) == len(SEARCH_RESULT_COLUMNS)
+        assert row[0] == rank
+        assert isinstance(row[1], float)
+        assert row[2]  # path is non-empty
+        assert row[3].count(":") == 4  # HH:MM:SS–HH:MM:SS time range
     for h in raw:
         assert set(h.keys()) >= {
             "segment_id",
@@ -90,21 +93,21 @@ def test_run_search_text(ctx: AppContext) -> None:
 
 
 def test_run_search_visual_text_query(ctx: AppContext) -> None:
-    gallery, raw = run_search(ctx, "anything", "visual", None, 3, "", 0.4)
-    assert len(gallery) == 3
+    rows, raw = run_search(ctx, "anything", "visual", None, 3, "", 0.4)
+    assert len(rows) == 3
     assert len(raw) == 3
 
 
 def test_run_search_visual_with_image(ctx: AppContext) -> None:
     img = Image.new("RGB", (32, 32), (255, 0, 0))
-    gallery, raw = run_search(ctx, "", "visual", img, 3, "", 0.4)
-    assert len(gallery) == 3
+    rows, raw = run_search(ctx, "", "visual", img, 3, "", 0.4)
+    assert len(rows) == 3
     assert len(raw) == 3
 
 
 def test_run_search_multi_blends(ctx: AppContext) -> None:
-    gallery, raw = run_search(ctx, "anything", "multi", None, 4, "", 0.4)
-    assert len(gallery) == 4
+    rows, raw = run_search(ctx, "anything", "multi", None, 4, "", 0.4)
+    assert len(rows) == 4
     for h in raw:
         # Multi mode tags both sources in the components dict.
         comps = h["components"]
@@ -132,7 +135,7 @@ def test_run_search_multi_requires_query(ctx: AppContext) -> None:
 
 
 def test_run_search_sql_filter_passes_through(ctx: AppContext) -> None:
-    gallery, raw = run_search(ctx, "x", "visual", None, 10, "idx >= 3", 0.4)
+    _rows, raw = run_search(ctx, "x", "visual", None, 10, "idx >= 3", 0.4)
     # Filter restricts to segments idx 3 and 4 → 2 rows total.
     assert len(raw) <= 2
     for h in raw:
@@ -193,7 +196,7 @@ def test_hit_to_state_round_trip_keys() -> None:
     json.dumps(state)
 
 
-def test_caption_format() -> None:
+def test_result_row_format() -> None:
     from video_lance.search import SearchHit
 
     hit = SearchHit(
@@ -207,10 +210,9 @@ def test_caption_format() -> None:
         text="hello world",
         score=0.83,
     )
-    cap = _caption(1, hit)
-    assert cap.startswith("1. [0.830]")
-    assert "my/video.mp4" in cap
-    assert "00:12:34" in cap  # time_range formatting
+    row = _result_row(1, hit)
+    assert row == [1, 0.83, "my/video.mp4", hit.time_range(), "hello world"]
+    assert "00:12:34" in row[3]  # time_range formatting
 
 
 # -- build_context behavior --------------------------------------------------
@@ -234,22 +236,9 @@ def test_build_context_cold_starts_on_missing_db(
     assert ctx.tables.segments.count_rows() == 0
     assert ctx.tables.videos.count_rows() == 0
 
-    gallery, raw = run_search(ctx, "anything", "text", None, 5, "", 0.4)
-    assert gallery == []
+    rows, raw = run_search(ctx, "anything", "text", None, 5, "", 0.4)
+    assert rows == []
     assert raw == []
-
-
-# -- gallery thumbnails resolve to real JPEGs --------------------------------
-
-
-def test_run_search_thumbnails_are_real_jpegs(ctx: AppContext) -> None:
-    gallery, _ = run_search(ctx, "x", "visual", None, 3, "", 0.4)
-    for img, _cap in gallery:
-        # Round-trip through PNG to make sure the image actually has pixel data.
-        buf = io.BytesIO()
-        img.save(buf, format="PNG")
-        decoded = Image.open(io.BytesIO(buf.getvalue()))
-        decoded.verify()
 
 
 # -- Gradio build is importable but lazy ------------------------------------

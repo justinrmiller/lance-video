@@ -2,36 +2,34 @@
 
 A Python pipeline that indexes a directory of videos into a LanceDB store with multi-modal embeddings, plus a Gradio UI for searching it.
 
-```
-                      ┌────────────────────────────────────────────────┐
-                      │  uv run video-lance ingest ./videos            │
-                      │                                                │
-                      │  ffprobe → faster-whisper → segmenter →        │
-                      │  ffmpeg clip/keyframe → e5-instruct (text) →   │
-                      │  SigLIP 2 (vision) → LanceDB (Blob V1 for      │
-                      │  clip_bytes + keyframe_jpeg)                   │
-                      └─────────────────────┬──────────────────────────┘
-                                            │
-                                            ▼
-                              ┌──────────────────────────┐
-                              │  ./video-lance.db/       │
-                              │   (or s3://...,          │
-                              │    same Lance format)    │
-                              └──────────┬───────────────┘
-                                         │
-                                         ▼
-   ┌─────────────────────────────────────────────────────────────────┐
-   │  uv run video-lance ui   (Gradio Blocks)                        │
-   │                                                                 │
-   │  free-form text query → e5 encode_query                         │
-   │  free-form text query → SigLIP 2 encode_text (cross-modal)      │
-   │  image upload         → SigLIP 2 encode_image                   │
-   │       ↓                                                         │
-   │  LanceDB hybrid vector + FTS search                             │
-   │       ↓                                                         │
-   │  gallery of keyframe thumbnails (Blob V1 reads)                 │
-   │  click a tile → inline <video> playback of clip_bytes           │
-   └─────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph ingest["uv run video-lance ingest ./videos"]
+        direction TB
+        A[ffprobe] --> B[faster-whisper transcribe]
+        B --> C["segmenter<br/>overlapping windows"]
+        C --> D["ffmpeg<br/>clip + keyframe"]
+        D --> E["e5-instruct<br/>text embedding (1024-d)"]
+        D --> F["SigLIP 2<br/>visual embedding (1152-d)"]
+    end
+
+    E --> DB
+    F --> DB
+    DB[("./video-lance.db<br/>videos · segments · _metadata<br/>Blob V1: clip_bytes + keyframe_jpeg<br/>local dir or s3://…")]
+
+    subgraph search["uv run video-lance ui / search"]
+        direction TB
+        Q1["text query — text mode"] --> EN1[e5 encode_query]
+        Q2["text query — visual / multi"] --> EN2[SigLIP encode_text]
+        Q3[image upload] --> EN3[SigLIP encode_image]
+        EN1 --> RANK["LanceDB vector + FTS<br/>RRF fusion + score normalize"]
+        EN2 --> RANK
+        EN3 --> RANK
+        RANK --> TBL["results table<br/>score · path · time · text"]
+        TBL --> PLAY["click row → inline clip playback<br/>clip_bytes Blob V1 read"]
+    end
+
+    DB --> RANK
 ```
 
 ## Status
@@ -46,9 +44,21 @@ A Python pipeline that indexes a directory of videos into a LanceDB store with m
 | 6 | Search (text / visual / multi), `info`, `reindex` | ✅ done |
 | 7 | Gradio UI (`video-lance ui`) | ✅ done |
 
+## Documentation
+
+Detailed reference docs live in [`docs/`](docs/README.md):
+
+- [architecture.md](docs/architecture.md) — module map, data model, Blob V1 storage, models/devices, config.
+- [pipeline.md](docs/pipeline.md) — the eight ingest stages, idempotency, accurate clip/frame seeking, the embedding-model guard.
+- [search.md](docs/search.md) — the three modes, RRF fusion, score normalization, indexing.
+- [cli-and-ui.md](docs/cli-and-ui.md) — full CLI flag reference and the Gradio tabs.
+- [development.md](docs/development.md) — tests, tooling, conventions, extending the pipeline.
+
+[`CLAUDE.md`](CLAUDE.md) is a condensed agent-oriented guide to the same material.
+
 ## Requirements
 
-- **Python 3.11+**
+- **Python 3.12+**
 - **ffmpeg + ffprobe** on `PATH` (`brew install ffmpeg` on macOS)
 - **[uv](https://docs.astral.sh/uv/)** for environment management
 - Optional: GPU (CUDA / MPS) — pipeline auto-detects, falls back to CPU
@@ -59,7 +69,7 @@ A Python pipeline that indexes a directory of videos into a LanceDB store with m
 git clone <this repo>
 cd lance-video
 uv sync
-uv run pytest -v     # 227 passed, 6 skipped, ~25s
+uv run pytest -v     # 240 passed, 6 skipped, ~30s
 ```
 
 ### Ingest
@@ -97,8 +107,8 @@ The UI is a Gradio Blocks app with three tabs:
 - **Mode switcher** — `text` (e5 + FTS hybrid), `visual` (SigLIP 2 cross-modal), `multi` (RRF blend of both).
 - **Image upload** — drop in any image; SigLIP 2 encodes it and searches against `visual_embedding`.
 - **SQL filter** — pass a `WHERE` expression like `duration_s > 60` straight to LanceDB.
-- **Gallery of keyframe thumbnails** — pulled from the `keyframe_jpeg` blob column on every search.
-- **Inline clip playback** — click a tile; the segment's `clip_bytes` blob column is read out, written to a tempfile, and fed to `<video>` with autoplay.
+- **Results table** — a `gr.Dataframe` of hits (`# · score · path · time · text`), rendered above the video player.
+- **Inline clip playback** — click a row; the segment's `clip_bytes` blob column is read out, written to a tempfile, and fed to the `<video>` player with autoplay.
 
 **Ingest** — run the full pipeline from the browser.
 - Point at a videos directory, set include / exclude globs, hit **Discover** to preview the file list.
@@ -117,6 +127,8 @@ The UI is a Gradio Blocks app with three tabs:
 ```
 video-lance/
 ├── pyproject.toml
+├── CLAUDE.md                      # condensed agent-oriented project guide
+├── docs/                          # detailed reference docs (architecture, pipeline, search, cli-and-ui, development)
 ├── scripts/demo.sh                # one-shot ingest + search demo (CLI only)
 ├── src/video_lance/
 │   ├── config.py                  # SegmentationConfig, FrameSamplingConfig, Config
@@ -137,7 +149,7 @@ video-lance/
 │   ├── search.py                  # text / visual / multi + ensure_indexes + db_info
 │   ├── ui_app.py                  # Gradio Blocks app + run_search / play_clip
 │   └── cli.py                     # typer: ingest / search / info / reindex / ui
-└── tests/                         # 227 tests (+ 6 opt-in integration tests)
+└── tests/                         # 240 tests (+ 6 opt-in integration tests)
     ├── _fakes.py                  # shared fake Whisper / e5 / SigLIP 2
     ├── conftest.py                # session-scoped fixture_video
     └── fixtures/make_fixture.py   # deterministic 10s color-bar + sine-wave video
@@ -147,15 +159,15 @@ video-lance/
 
 `run_search(ctx, query, mode, image, limit, sql_filter, visual_weight)` and `play_clip(ctx, raw_hits, selected_index)` are plain Python functions on `src/video_lance/ui_app.py`. They're independently unit-tested (`tests/test_ui_app.py`). Gradio is just the I/O layer:
 
-- Submit / `Search` button → `run_search` → returns `(gallery_rows, raw_hits_state)`.
-- `gallery.select` → `play_clip` reads the segment's `clip_bytes` blob and returns a tempfile path to the `gr.Video` component.
+- Submit / `Search` button → `run_search` → returns `(table_rows, raw_hits)` (the raw hits are stashed in a `gr.State`).
+- `results_table.select` → `play_clip` reads the selected segment's `clip_bytes` blob and returns a tempfile path to the `gr.Video` component.
 
 The Gradio import is at module top because Gradio's introspection calls `typing.get_type_hints()` on event handlers, and `gr.SelectData` annotations can't be resolved if `gr` is only bound inside a function. Once is enough; the CLI lazy-imports `ui_app.launch`, so the gradio import only fires when you actually launch the UI (or run the UI tests).
 
 ## Testing
 
 ```bash
-uv run pytest -v                            # 227 passed, 6 skipped
+uv run pytest -v                            # 240 passed, 6 skipped
 uv run ruff check src tests                 # lint
 uv run ruff format --check src tests scripts  # formatting gate
 uv run ty check                             # static type check (Astral's `ty`)
@@ -192,4 +204,5 @@ Every Python module has unit tests against a deterministic 10 s color-bar fixtur
 - **Pipeline is sequential per video.** A `ProcessPoolExecutor` is the natural next step, but the embedder instances aren't easily pickleable, so adding it sensibly is a follow-up.
 - **Free-form queries pay encoding cost on every search.** e5 ~50 ms, SigLIP 2 ~30 ms on warm CPU. Imperceptible to humans but worth noting if you go very high QPS.
 - **SigLIP 2 is multilingual** (a big improvement over SigLIP 1, which was English-centric). Non-English `visual` / `multi` queries work reasonably; for transcript-over-transcript text search, e5-instruct remains the better encoder, which is why the `text` mode keeps using it.
-- **No live ingest from the UI.** The UI only reads. To re-ingest with new settings, drop to the CLI.
+- **Ingest re-encodes clips.** Stored clips are cut with frame-accurate seeking (`ClipStage` uses `precise=True`) so they line up with the transcript window, at the cost of a re-encode per segment. Clips written by older versions were stream-copied (keyframe-snapped) — re-ingest with `--force` to regenerate them.
+- **Switching embedding models needs `--force`.** Ingesting a populated store with a different text/vision model is rejected (`EmbeddingModelMismatch`) to avoid mixing embedding spaces; a full `--force` re-ingest is required to switch.
